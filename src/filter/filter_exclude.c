@@ -4,7 +4,7 @@
 #include <fnmatch.h>
 #include <stdio.h>
 
-// Enhanced pattern matching with better wildcard support
+// pattern matching with better wildcard support
 static int match_pattern_enhanced(const char *pattern, const char *string)
 {
     if (!pattern || !string)
@@ -14,12 +14,13 @@ static int match_pattern_enhanced(const char *pattern, const char *string)
     if (strlen(pattern) == 0)
         return 0;
 
-    // Use fnmatch for standard glob patterns
-    if (fnmatch(pattern, string, FNM_PATHNAME) == 0)
+    // For simple patterns like "*.tsx", don't use FNM_PATHNAME
+    // FNM_PATHNAME treats '/' specially which breaks simple wildcard matching
+    if (fnmatch(pattern, string, 0) == 0)
         return 1;
 
     // Also try case-insensitive matching
-    if (fnmatch(pattern, string, FNM_PATHNAME | FNM_CASEFOLD) == 0)
+    if (fnmatch(pattern, string, FNM_CASEFOLD) == 0)
         return 1;
 
     return 0;

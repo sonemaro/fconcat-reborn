@@ -260,6 +260,7 @@ int filter_engine_configure(FilterEngine *engine, const ResolvedConfig *config)
     add_output_file_exclusion(engine, config);
 
     // Initialize built-in filters
+    filter_include_patterns_init_internal(engine, config); 
     filter_exclude_patterns_init_internal(engine, config);
     filter_binary_detection_init_internal(engine, config);
     filter_symlink_handling_init_internal(engine, config);
@@ -328,24 +329,46 @@ int filter_engine_should_include_path(FilterEngine *engine, FconcatContext *ctx,
 
     pthread_mutex_lock(&engine->mutex);
 
-    // Check rules in priority order
+    // Check include rules first - if any include patterns are specified,
+    // the file must match at least one include pattern
+    bool has_include_rules = false;
+    bool matches_include = false;
+
     for (int i = 0; i < engine->rule_count; i++)
     {
         FilterRule *rule = &engine->rules[i];
 
-        if (rule->match_path)
+        if (rule->type == FILTER_TYPE_INCLUDE && rule->match_path)
+        {
+            has_include_rules = true;
+            int result = rule->match_path(path, info, rule->context);
+            if (result)
+            {
+                matches_include = true;
+                break;  // Found a matching include pattern
+            }
+        }
+    }
+
+    // If there are include rules but this path doesn't match any, exclude it
+    if (has_include_rules && !matches_include)
+    {
+        pthread_mutex_unlock(&engine->mutex);
+        return 0;
+    }
+
+    // Check exclude rules
+    for (int i = 0; i < engine->rule_count; i++)
+    {
+        FilterRule *rule = &engine->rules[i];
+
+        if (rule->type == FILTER_TYPE_EXCLUDE && rule->match_path)
         {
             int result = rule->match_path(path, info, rule->context);
-
-            if (rule->type == FILTER_TYPE_EXCLUDE && result)
+            if (result)
             {
                 pthread_mutex_unlock(&engine->mutex);
                 return 0; // Exclude this path
-            }
-            else if (rule->type == FILTER_TYPE_INCLUDE && !result)
-            {
-                pthread_mutex_unlock(&engine->mutex);
-                return 0; // Don't include this path
             }
         }
     }

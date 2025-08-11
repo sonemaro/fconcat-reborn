@@ -16,6 +16,7 @@ extern "C"
 #define MAX_CONFIG_LAYERS 8
 #define MAX_PLUGINS 32
 #define MAX_EXCLUDES 1000
+#define MAX_INCLUDES 1000
 #define MAX_BUFFER_SIZE 1024 * 4
 #define BINARY_CHECK_SIZE 8192
 #define PLUGIN_CHUNK_SIZE 4096
@@ -112,12 +113,14 @@ extern "C"
         bool show_size;
         bool verbose;
         bool interactive;
-        int log_level; // ADDED: Log level configuration
+        int log_level;
         char *output_format;
         char *input_directory;
         char *output_file;
         char **exclude_patterns;
         int exclude_count;
+        char **include_patterns;  
+        int include_count;        
         PluginConfig *plugins;
         int plugin_count;
     } ResolvedConfig;

@@ -153,6 +153,9 @@ void print_usage(const char *program_name)
             "Options:\n"
             "  <input_directory>     Path to the directory to scan and concatenate.\n"
             "  <output_file>         Path to the output file to write results.\n"
+            "  --include <patterns>  Include only files/directories matching patterns.\n"
+            "                        Supports wildcards (* and ?) and multiple patterns.\n"
+            "                        Example: --include \"*.c\" \"*.h\" \"src/*\"\n"
             "  --exclude <patterns>  Exclude files/directories matching patterns.\n"
             "                        Supports wildcards (* and ?) and multiple patterns.\n"
             "                        Example: --exclude \"*.log\" \"build/*\" \"temp?.txt\"\n"
@@ -172,9 +175,9 @@ void print_usage(const char *program_name)
             "Examples:\n"
             "  %s ./src all.txt\n"
             "  %s ./project result.json --format json --show-size\n"
-            "  %s ./code output.txt --exclude \"*.log\" \"node_modules/*\" \"*.tmp\"\n"
+            "  %s ./code output.txt --include \"*.c\" \"*.h\" --exclude \"test*\"\n"
             "  %s ./kernel out.txt --exclude \"*.o\" \"*.ko\" --binary-skip\n"
-            "  %s ./project out.txt --log-level debug --plugin ./plugin.so:debug=1,format=json\n"
+            "  %s ./project out.txt --include \"src/*\" \"*.md\" --exclude \"*.tmp\"\n"
             "\n"
             "Signal Handling:\n"
             "  Ctrl+C (SIGINT)       - First press: graceful shutdown, Second press: IMMEDIATE KILL\n"
@@ -184,12 +187,19 @@ void print_usage(const char *program_name)
             "Plugin parameters:\n"
             "  Plugins can accept parameters in key=value format, separated by commas\n"
             "  Example: --plugin ./myplugin.so:debug=1,threshold=100,mode=strict\n"
+
+            "Include/Exclude Processing:\n"
+            "  If --include patterns are specified, ONLY files matching at least one\n"
+            "  include pattern will be processed.\n"
+            "  Include patterns are processed first, then exclude patterns.\n"
+            "  This allows for fine-grained control: include a broad category, then\n"
+            "  exclude specific files within that category.\n"
             "\n"
-            "Exclude patterns support:\n"
+            "Pattern Matching:\n"
             "  * matches any sequence of characters\n"
             "  ? matches any single character\n"
             "  Patterns match both full paths and basenames\n"
-            "  Multiple patterns can be specified\n"
+            "  Multiple patterns can be specified for both --include and --exclude\n"
             "\n"
             "Log levels (from lowest to highest verbosity):\n"
             "  error    - Only error messages\n"
@@ -198,8 +208,13 @@ void print_usage(const char *program_name)
             "  debug    - Debug info and above\n"
             "  trace    - All messages including trace\n"
             "\n"
+            "Examples with include/exclude:\n"
+            "  %s ./src out.txt --include \"*.c\" \"*.h\"           # Only C source files\n"
+            "  %s ./proj out.txt --include \"src/*\" --exclude \"*.test.c\"  # src/ files but not tests\n"
+            "  %s ./code out.txt --include \"*.py\" --exclude \"__pycache__/*\"  # Python but not cache\n"
+            "\n"
             "For more information, visit: https://github.com/sonemaro/fconcat\n",
-            program_name, program_name, program_name, program_name, program_name, program_name);
+            program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name);
 }
 
 // Safe processing with shutdown checks

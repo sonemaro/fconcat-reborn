@@ -128,6 +128,12 @@ void config_manager_destroy(ConfigManager *manager)
         }
         free(manager->resolved->exclude_patterns);
 
+        for (int i = 0; i < manager->resolved->include_count; i++)
+        {
+            free(manager->resolved->include_patterns[i]);
+        }
+        free(manager->resolved->include_patterns);
+
         // Free plugin configurations
         for (int i = 0; i < manager->resolved->plugin_count; i++)
         {
@@ -162,7 +168,7 @@ int config_load_defaults(ConfigManager *manager)
         return -1;
     }
 
-    // FIXED: Use stack allocation pattern - much safer and clearer
+    // Use stack allocation pattern - much safer and clearer
     struct
     {
         const char *key;
@@ -180,7 +186,7 @@ int config_load_defaults(ConfigManager *manager)
         {"verbose", CONFIG_TYPE_BOOL, {.bool_val = false}},
         {"interactive", CONFIG_TYPE_BOOL, {.bool_val = false}},
         {"output_format", CONFIG_TYPE_STRING, {.str_val = "text"}},
-        {"log_level", CONFIG_TYPE_INT, {.int_val = (int)LOG_INFO}}, // FIXED: Cast to int
+        {"log_level", CONFIG_TYPE_INT, {.int_val = (int)LOG_INFO}},
     };
 
     for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++)
@@ -299,6 +305,53 @@ int config_load_cli(ConfigManager *manager, int argc, char *argv[])
                 i += exclude_count - 1; // Skip processed patterns
             }
         }
+        // Include pattern processing
+        else if (strcmp(argv[i], "--include") == 0)
+        {
+            // Process all include patterns after --include
+            i++; // Move to first pattern
+            int include_count = 0;
+
+            // Count patterns
+            for (int j = i; j < argc && argv[j][0] != '-'; j++)
+            {
+                include_count++;
+            }
+
+            if (include_count > 0)
+            {
+                // Store include count
+                if (config_layer_add_value(layer, "include_count", CONFIG_TYPE_INT) != 0)
+                {
+                    pthread_mutex_unlock(&manager->mutex);
+                    return -1;
+                }
+                ConfigValue *count_val = config_layer_get_value(layer, "include_count");
+                config_value_set_int(count_val, include_count);
+
+                // Store each pattern
+                for (int j = 0; j < include_count; j++)
+                {
+                    char pattern_key[64];
+                    int ret = snprintf(pattern_key, sizeof(pattern_key), "include_pattern_%d", j);
+                    if (ret < 0 || ret >= (int)sizeof(pattern_key))
+                    {
+                        pthread_mutex_unlock(&manager->mutex);
+                        return -1;
+                    }
+
+                    if (config_layer_add_value(layer, pattern_key, CONFIG_TYPE_STRING) != 0)
+                    {
+                        pthread_mutex_unlock(&manager->mutex);
+                        return -1;
+                    }
+                    ConfigValue *pattern_val = config_layer_get_value(layer, pattern_key);
+                    config_value_set_string(pattern_val, argv[i + j]);
+                }
+
+                i += include_count - 1; // Skip processed patterns
+            }
+        }
         else if (strcmp(argv[i], "--show-size") == 0 || strcmp(argv[i], "-s") == 0)
         {
             if (config_layer_add_value(layer, "show_size", CONFIG_TYPE_BOOL) != 0)
@@ -326,7 +379,7 @@ int config_load_cli(ConfigManager *manager, int argc, char *argv[])
                 return -1;
             }
             ConfigValue *log_val = config_layer_get_value(layer, "log_level");
-            config_value_set_int(log_val, (int)LOG_DEBUG); // FIXED: Cast to int
+            config_value_set_int(log_val, (int)LOG_DEBUG);
         }
         else if (strcmp(argv[i], "--log-level") == 0 && i + 1 < argc)
         {
@@ -339,7 +392,7 @@ int config_load_cli(ConfigManager *manager, int argc, char *argv[])
             i++;
 
             // Parse log level
-            int log_level = (int)LOG_INFO; // Default - FIXED: Cast to int
+            int log_level = (int)LOG_INFO; // Default
             if (strcmp(argv[i], "error") == 0)
                 log_level = (int)LOG_ERROR;
             else if (strcmp(argv[i], "warning") == 0)
@@ -637,7 +690,7 @@ ResolvedConfig *config_resolve(ConfigManager *manager)
                 int ret = snprintf(pattern_key, sizeof(pattern_key), "exclude_pattern_%d", i);
                 if (ret < 0 || ret >= (int)sizeof(pattern_key))
                 {
-                    config->exclude_patterns[i] = strdup(""); // Fallback
+                    config->exclude_patterns[i] = strdup("");
                     continue;
                 }
 
@@ -648,13 +701,56 @@ ResolvedConfig *config_resolve(ConfigManager *manager)
                 }
                 else
                 {
-                    config->exclude_patterns[i] = strdup(""); // Fallback
+                    config->exclude_patterns[i] = strdup("");
                 }
             }
         }
         else
         {
             config->exclude_count = 0;
+        }
+    }
+
+    // Resolve include patterns
+    int include_count = config_get_int(manager, "include_count");
+    if (include_count > 0)
+    {
+        // Free existing patterns
+        for (int i = 0; i < config->include_count; i++)
+        {
+            free(config->include_patterns[i]);
+        }
+        free(config->include_patterns);
+
+        config->include_patterns = malloc(include_count * sizeof(char *));
+        if (config->include_patterns)
+        {
+            config->include_count = include_count;
+
+            for (int i = 0; i < include_count; i++)
+            {
+                char pattern_key[64];
+                int ret = snprintf(pattern_key, sizeof(pattern_key), "include_pattern_%d", i);
+                if (ret < 0 || ret >= (int)sizeof(pattern_key))
+                {
+                    config->include_patterns[i] = strdup("");
+                    continue;
+                }
+
+                const char *pattern = config_get_string(manager, pattern_key);
+                if (pattern)
+                {
+                    config->include_patterns[i] = strdup(pattern);
+                }
+                else
+                {
+                    config->include_patterns[i] = strdup("");
+                }
+            }
+        }
+        else
+        {
+            config->include_count = 0;
         }
     }
 

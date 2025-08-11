@@ -44,6 +44,13 @@ extern "C"
         int pattern_count;
     } ExcludeContext;
 
+    // Include pattern context
+    typedef struct
+    {
+        char **patterns;
+        int pattern_count;
+    } IncludeContext;
+
     // Filter functions
     FilterEngine *filter_engine_create(void);
     void filter_engine_destroy(FilterEngine *engine);
@@ -56,16 +63,20 @@ extern "C"
 
     // Built-in filters
     int filter_exclude_patterns_init(FilterEngine *engine, const ResolvedConfig *config);
+    int filter_include_patterns_init(FilterEngine *engine, const ResolvedConfig *config); 
     int filter_binary_detection_init(FilterEngine *engine, const ResolvedConfig *config);
     int filter_symlink_handling_init(FilterEngine *engine, const ResolvedConfig *config);
 
     int filter_engine_add_rule_internal(FilterEngine *engine, FilterRule *rule);
     int filter_exclude_patterns_init_internal(FilterEngine *engine, const ResolvedConfig *config);
+    int filter_include_patterns_init_internal(FilterEngine *engine, const ResolvedConfig *config); 
     int filter_binary_detection_init_internal(FilterEngine *engine, const ResolvedConfig *config);
     int filter_symlink_handling_init_internal(FilterEngine *engine, const ResolvedConfig *config);
 
     int exclude_match_path(const char *path, FileInfo *info, void *context);
+    int include_match_path(const char *path, FileInfo *info, void *context); 
     void destroy_exclude_context_wrapper(void *context);
+    void destroy_include_context_wrapper(void *context); 
     char *get_absolute_path_util(const char *path);
     char *get_relative_path_util(const char *base_dir, const char *target_path);
     const char *get_filename_util(const char *path);
