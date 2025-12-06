@@ -179,6 +179,13 @@ int plugin_manager_load_plugin(PluginManager *manager, const char *path, char **
                     for (int i = 0; i < parameter_count; i++)
                     {
                         meta->parameters[i] = strdup(parameters[i] ? parameters[i] : "");
+                        if (!meta->parameters[i]) {
+                            for (int j = 0; j < i; j++) free(meta->parameters[j]);
+                            free(meta->parameters);
+                            meta->parameters = NULL;
+                            meta->parameter_count = 0;
+                            break;
+                        }
                     }
                 }
             }
@@ -249,6 +256,13 @@ int plugin_manager_load_plugin(PluginManager *manager, const char *path, char **
                     for (int i = 0; i < parameter_count; i++)
                     {
                         meta->parameters[i] = strdup(parameters[i] ? parameters[i] : "");
+                        if (!meta->parameters[i]) {
+                            for (int j = 0; j < i; j++) free(meta->parameters[j]);
+                            free(meta->parameters);
+                            meta->parameters = NULL;
+                            meta->parameter_count = 0;
+                            break;
+                        }
                     }
                 }
             }
@@ -315,6 +329,13 @@ int plugin_manager_load_plugin(PluginManager *manager, const char *path, char **
                     for (int i = 0; i < parameter_count; i++)
                     {
                         meta->parameters[i] = strdup(parameters[i] ? parameters[i] : "");
+                        if (!meta->parameters[i]) {
+                            for (int j = 0; j < i; j++) free(meta->parameters[j]);
+                            free(meta->parameters);
+                            meta->parameters = NULL;
+                            meta->parameter_count = 0;
+                            break;
+                        }
                     }
                 }
             }

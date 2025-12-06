@@ -167,11 +167,17 @@ static IncludeContext *create_include_context(const ResolvedConfig *config)
                 }
             }
 
-            printf("DEBUG: Include pattern %d: '%s'\n", i, ctx->patterns[i]);
         }
         else
         {
             ctx->patterns[i] = strdup(""); // Empty pattern
+            if (!ctx->patterns[i]) {
+                // Cleanup on failure
+                for (int j = 0; j < i; j++) free(ctx->patterns[j]);
+                free(ctx->patterns);
+                free(ctx);
+                return NULL;
+            }
         }
     }
 
@@ -204,14 +210,7 @@ int filter_include_patterns_init_internal(FilterEngine *engine, const ResolvedCo
 
     if (config->include_count == 0)
     {
-        printf("DEBUG: No include patterns specified\n");
         return 0; // No patterns to include
-    }
-
-    printf("DEBUG: Initializing include patterns: %d patterns\n", config->include_count);
-    for (int i = 0; i < config->include_count; i++)
-    {
-        printf("DEBUG: Include pattern %d: '%s'\n", i, config->include_patterns[i]);
     }
 
     // Create include context
@@ -236,7 +235,6 @@ int filter_include_patterns_init_internal(FilterEngine *engine, const ResolvedCo
         return result;
     }
 
-    printf("DEBUG: Include filter rule added successfully\n");
     return 0;
 }
 

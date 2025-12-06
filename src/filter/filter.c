@@ -86,6 +86,34 @@ char *get_relative_path_util(const char *base_dir, const char *target_path)
     return result;
 }
 
+// Check if a file is binary by reading the first portion and looking for null bytes
+// Returns: 1 if binary, 0 if text, -1 on error
+int filter_is_binary_file(const char *filepath)
+{
+    if (!filepath)
+        return -1;
+
+    FILE *file = fopen(filepath, "rb");
+    if (!file)
+        return -1;
+
+    unsigned char buffer[BINARY_CHECK_SIZE];
+    size_t bytes_read = fread(buffer, 1, sizeof(buffer), file);
+    fclose(file);
+
+    if (bytes_read == 0)
+        return 0; // Empty file is treated as text
+
+    // Check for null bytes - primary binary indicator
+    for (size_t i = 0; i < bytes_read; i++)
+    {
+        if (buffer[i] == 0)
+            return 1; // Binary
+    }
+
+    return 0; // Text
+}
+
 FilterEngine *filter_engine_create(void)
 {
     FilterEngine *engine = calloc(1, sizeof(FilterEngine));

@@ -14,127 +14,51 @@
 #include <sys/wait.h>
 #include <sys/types.h>
 
-// Global managers for signal handling
+// Global managers for cleanup (used in main, not signal handler)
 static PluginManager *g_plugin_manager = NULL;
 static ErrorManager *g_error_manager = NULL;
 static MemoryManager *g_memory_manager = NULL;
 static FconcatContext *g_context = NULL;
-static volatile sig_atomic_t shutdown_requested = 0;
-static volatile sig_atomic_t force_shutdown = 0;
-static pid_t main_pid;
 
-// Nuclear option - force kill everything
-static void nuclear_shutdown(void)
-{
-    printf("💥 NUCLEAR SHUTDOWN - TERMINATING EVERYTHING!\n");
-    fflush(stdout);
+// Async-signal-safe shutdown flag - ONLY thing the signal handler touches
+static volatile sig_atomic_t g_shutdown_requested = 0;
 
-    // Kill entire process group
-    kill(0, SIGKILL);
-
-    // If that didn't work, kill just this process
-    kill(getpid(), SIGKILL);
-
-    // Last resort - abort
-    abort();
-}
-
-// Signal handler for graceful shutdown
+// Signal handler - ONLY sets atomic flag, nothing else
+// This is the ONLY async-signal-safe approach
 static void signal_handler(int signum)
 {
-    // Increment shutdown counter for force quit detection
-    shutdown_requested++;
-
-    printf("\n🔌 Received signal %d, shutting down", signum);
-    if (shutdown_requested > 1 && shutdown_requested <= 3)
-    {
-        printf(" (press %d more times to force quit)", 3 - shutdown_requested);
-    }
-    printf("...\n");
-    fflush(stdout);
-
-    // IMMEDIATE nuclear shutdown after 2 Ctrl+C presses
-    if (shutdown_requested >= 2)
-    {
-        printf("💥 IMMEDIATE FORCE SHUTDOWN!\n");
-        fflush(stdout);
-        nuclear_shutdown();
-        return; // Never reached
-    }
-
-    // First shutdown attempt - try graceful cleanup with timeout
-    if (shutdown_requested == 1)
-    {
-        printf("🔄 Attempting graceful shutdown...\n");
-        fflush(stdout);
-
-        // Reset signal handler for immediate next response
-        signal(SIGINT, signal_handler);
-        signal(SIGTERM, signal_handler);
-
-        // Start a separate thread or process for timeout instead of alarm
-        // to avoid conflicts with other alarms
-
-        // Try to cleanup plugins with context if available
-        if (g_plugin_manager && g_context)
-        {
-            printf("🔌 Shutting down plugins...\n");
-            fflush(stdout);
-            plugin_manager_destroy(g_plugin_manager, g_context);
-            g_plugin_manager = NULL;
-        }
-        else if (g_plugin_manager)
-        {
-            plugin_manager_destroy(g_plugin_manager, NULL);
-            g_plugin_manager = NULL;
-        }
-
-        if (g_error_manager)
-        {
-            error_manager_destroy(g_error_manager);
-            g_error_manager = NULL;
-        }
-
-        if (g_memory_manager)
-        {
-            memory_manager_destroy(g_memory_manager);
-            g_memory_manager = NULL;
-        }
-
-        printf("✅ Graceful shutdown completed\n");
-        fflush(stdout);
-        exit(EXIT_SUCCESS);
+    (void)signum;  // Unused - we just need to know a signal arrived
+    g_shutdown_requested++;
+    
+    // For immediate kill on second signal, use _exit (async-signal-safe)
+    if (g_shutdown_requested >= 2) {
+        _exit(130);  // 128 + SIGINT(2) = standard interrupted exit code
     }
 }
 
-// Setup comprehensive signal handling
+// Setup signal handling - simple and safe
 static void setup_signal_handling(void)
 {
     struct sigaction sa;
 
-    // Store main PID for process group operations
-    main_pid = getpid();
-
     // Setup main signal handler
     sa.sa_handler = signal_handler;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART; // Restart interrupted system calls
+    sa.sa_flags = 0;  // Don't use SA_RESTART - let syscalls return EINTR so we can check shutdown
 
     // Handle various termination signals
-    sigaction(SIGINT, &sa, NULL);  // Ctrl+C
-    sigaction(SIGTERM, &sa, NULL); // Termination request
-    sigaction(SIGQUIT, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);   // Ctrl+C
+    sigaction(SIGTERM, &sa, NULL);  // Termination request
+    sigaction(SIGQUIT, &sa, NULL);  // Ctrl+backslash
 
     // Ignore SIGPIPE to prevent crashes on broken pipes
     signal(SIGPIPE, SIG_IGN);
-
-    // Don't set up SIGALRM handler to avoid conflicts
 }
 
-// Check if shutdown was requested
+// Check if shutdown was requested (safe to call from main thread)
 static int is_shutdown_requested(void)
 {
-    return shutdown_requested > 0 || force_shutdown;
+    return g_shutdown_requested > 0;
 }
 
 void print_header()
@@ -458,9 +382,6 @@ int main(int argc, char *argv[])
     // Store context globally for signal handler
     g_context = ctx;
 
-    printf("DEBUG: About to initialize plugins with context\n");
-    fflush(stdout);
-
     // Check shutdown before plugin initialization
     if (is_shutdown_requested())
     {
@@ -469,8 +390,6 @@ int main(int argc, char *argv[])
     }
 
     plugin_manager_initialize_plugins(g_plugin_manager, ctx);
-    printf("DEBUG: Plugin initialization completed\n");
-    fflush(stdout);
 
     // Check shutdown after plugin initialization
     if (is_shutdown_requested())

@@ -652,6 +652,10 @@ ResolvedConfig *config_resolve(ConfigManager *manager)
     {
         free(config->output_format);
         config->output_format = strdup(format);
+        if (!config->output_format) {
+            free(config);
+            return NULL;  // Allocation failed
+        }
     }
 
     const char *input_dir = config_get_string(manager, "input_directory");
@@ -659,6 +663,11 @@ ResolvedConfig *config_resolve(ConfigManager *manager)
     {
         free(config->input_directory);
         config->input_directory = strdup(input_dir);
+        if (!config->input_directory) {
+            free(config->output_format);
+            free(config);
+            return NULL;  // Allocation failed
+        }
     }
 
     const char *output_file = config_get_string(manager, "output_file");
@@ -666,6 +675,12 @@ ResolvedConfig *config_resolve(ConfigManager *manager)
     {
         free(config->output_file);
         config->output_file = strdup(output_file);
+        if (!config->output_file) {
+            free(config->output_format);
+            free(config->input_directory);
+            free(config);
+            return NULL;  // Allocation failed
+        }
     }
 
     // Resolve exclude patterns
@@ -691,6 +706,11 @@ ResolvedConfig *config_resolve(ConfigManager *manager)
                 if (ret < 0 || ret >= (int)sizeof(pattern_key))
                 {
                     config->exclude_patterns[i] = strdup("");
+                    if (!config->exclude_patterns[i]) {
+                        // Truncate pattern list on allocation failure
+                        config->exclude_count = i;
+                        break;
+                    }
                     continue;
                 }
 
@@ -702,6 +722,11 @@ ResolvedConfig *config_resolve(ConfigManager *manager)
                 else
                 {
                     config->exclude_patterns[i] = strdup("");
+                }
+                if (!config->exclude_patterns[i]) {
+                    // Truncate pattern list on allocation failure
+                    config->exclude_count = i;
+                    break;
                 }
             }
         }
@@ -734,6 +759,11 @@ ResolvedConfig *config_resolve(ConfigManager *manager)
                 if (ret < 0 || ret >= (int)sizeof(pattern_key))
                 {
                     config->include_patterns[i] = strdup("");
+                    if (!config->include_patterns[i]) {
+                        // Truncate pattern list on allocation failure
+                        config->include_count = i;
+                        break;
+                    }
                     continue;
                 }
 
@@ -745,6 +775,11 @@ ResolvedConfig *config_resolve(ConfigManager *manager)
                 else
                 {
                     config->include_patterns[i] = strdup("");
+                }
+                if (!config->include_patterns[i]) {
+                    // Truncate pattern list on allocation failure
+                    config->include_count = i;
+                    break;
                 }
             }
         }

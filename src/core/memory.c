@@ -1,8 +1,30 @@
 #include "memory.h"
+#include "types.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
+
+// Allocation header for accurate memory tracking
+#define MEMORY_MAGIC 0xDEADBEEF
+#define MEMORY_FREED_MAGIC 0xFEEDFACE
+
+typedef struct {
+    size_t size;       // Size of user allocation (not including header)
+    uint32_t magic;    // Magic number for corruption detection
+} AllocationHeader;
+
+#define HEADER_SIZE (sizeof(AllocationHeader))
+
+// Get user pointer from header
+static inline void *header_to_user(AllocationHeader *header) {
+    return (char *)header + HEADER_SIZE;
+}
+
+// Get header from user pointer
+static inline AllocationHeader *user_to_header(void *ptr) {
+    return (AllocationHeader *)((char *)ptr - HEADER_SIZE);
+}
 
 #define SMALL_BUFFER_SIZE 4096   // 4KB
 #define MEDIUM_BUFFER_SIZE 16384 // 16KB
@@ -247,9 +269,13 @@ void memory_manager_destroy(MemoryManager *manager)
 
 void *memory_alloc(MemoryManager *manager, size_t size)
 {
-    void *ptr = malloc(size);
-    if (!ptr)
+    // Allocate with header for size tracking
+    AllocationHeader *header = (AllocationHeader *)malloc(HEADER_SIZE + size);
+    if (!header)
         return NULL;
+
+    header->size = size;
+    header->magic = MEMORY_MAGIC;
 
     if (manager && manager->track_allocations)
     {
@@ -264,22 +290,46 @@ void *memory_alloc(MemoryManager *manager, size_t size)
         pthread_mutex_unlock(&manager->mutex);
     }
 
-    return ptr;
+    return header_to_user(header);
 }
 
 void *memory_realloc(MemoryManager *manager, void *ptr, size_t size)
 {
-    void *new_ptr = realloc(ptr, size);
-    if (!new_ptr && size > 0)
+    // Handle NULL ptr case (acts like malloc)
+    if (!ptr)
+        return memory_alloc(manager, size);
+    
+    // Handle size 0 case (acts like free)
+    if (size == 0) {
+        memory_free(manager, ptr);
         return NULL;
+    }
+
+    AllocationHeader *old_header = user_to_header(ptr);
+    
+    // Validate magic number
+    if (old_header->magic != MEMORY_MAGIC) {
+        fprintf(stderr, "memory_realloc: corruption detected or invalid pointer!\n");
+        return NULL;
+    }
+    
+    size_t old_size = old_header->size;
+
+    // Reallocate with header
+    AllocationHeader *new_header = (AllocationHeader *)realloc(old_header, HEADER_SIZE + size);
+    if (!new_header)
+        return NULL;
+
+    new_header->size = size;
+    // magic stays the same
 
     if (manager && manager->track_allocations)
     {
         pthread_mutex_lock(&manager->mutex);
-        // Note: We can't track exact size changes without storing original sizes
-        // This is a simplified implementation
-        manager->stats.total_allocated += size;
+        // Correct tracking: subtract old size, add new size
+        manager->stats.current_usage -= old_size;
         manager->stats.current_usage += size;
+        manager->stats.total_allocated += size;  // Track total ever allocated
         manager->stats.allocation_count++;
         if (manager->stats.current_usage > manager->stats.peak_usage)
         {
@@ -288,7 +338,7 @@ void *memory_realloc(MemoryManager *manager, void *ptr, size_t size)
         pthread_mutex_unlock(&manager->mutex);
     }
 
-    return new_ptr;
+    return header_to_user(new_header);
 }
 
 void memory_free(MemoryManager *manager, void *ptr)
@@ -296,16 +346,33 @@ void memory_free(MemoryManager *manager, void *ptr)
     if (!ptr)
         return;
 
+    AllocationHeader *header = user_to_header(ptr);
+    
+    // Validate magic number
+    if (header->magic == MEMORY_FREED_MAGIC) {
+        fprintf(stderr, "memory_free: double-free detected!\n");
+        return;
+    }
+    if (header->magic != MEMORY_MAGIC) {
+        fprintf(stderr, "memory_free: corruption detected or invalid pointer!\n");
+        return;
+    }
+    
+    size_t size = header->size;
+
     if (manager && manager->track_allocations)
     {
         pthread_mutex_lock(&manager->mutex);
-        // Note: We can't track exact freed size without storing original sizes
-        // This is a simplified implementation
+        // Correct tracking: decrement usage by actual size
+        manager->stats.current_usage -= size;
+        manager->stats.total_freed += size;
         manager->stats.free_count++;
         pthread_mutex_unlock(&manager->mutex);
     }
 
-    free(ptr);
+    // Mark as freed before actually freeing (helps detect use-after-free in debug)
+    header->magic = MEMORY_FREED_MAGIC;
+    free(header);
 }
 
 MemoryStats memory_get_stats(MemoryManager *manager)
@@ -395,14 +462,33 @@ int stream_buffer_write(StreamBuffer *buffer, const char *data, size_t size)
     if (!buffer || !data || size == 0)
         return -1;
 
+    // Check if addition would overflow
+    if (buffer->size > SIZE_MAX - size)
+        return -1;  // Would overflow
+
     // Resize buffer if needed
     if (buffer->size + size > buffer->capacity)
     {
-        size_t new_capacity = buffer->capacity * 2;
-        while (new_capacity < buffer->size + size)
-        {
+        // Overflow-safe capacity doubling
+        size_t new_capacity = buffer->capacity;
+        size_t target = buffer->size + size;
+        
+        while (new_capacity < target) {
+            // Check for overflow before doubling
+            if (new_capacity > MAX_STREAM_BUFFER_SIZE / 2) {
+                // Can't double, try exact fit if under limit
+                if (target <= MAX_STREAM_BUFFER_SIZE) {
+                    new_capacity = target;
+                    break;
+                }
+                return -1;  // Would exceed max buffer size
+            }
             new_capacity *= 2;
         }
+        
+        // Final limit check
+        if (new_capacity > MAX_STREAM_BUFFER_SIZE)
+            return -1;
 
         char *new_data = memory_realloc(buffer->memory_manager, buffer->data, new_capacity);
         if (!new_data)

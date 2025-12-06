@@ -80,6 +80,7 @@ extern "C"
     char *get_absolute_path_util(const char *path);
     char *get_relative_path_util(const char *base_dir, const char *target_path);
     const char *get_filename_util(const char *path);
+    int filter_is_binary_file(const char *filepath);
 
 #ifdef __cplusplus
 }

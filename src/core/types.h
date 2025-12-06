@@ -23,6 +23,11 @@ extern "C"
 #define MAX_PATH 4096
 #define MAX_PLUGIN_PARAMS 16
 
+#define MAX_FILE_SIZE (1024ULL * 1024 * 1024)       // 1GB max file size
+#define MAX_STREAM_BUFFER_SIZE (256ULL * 1024 * 1024) // 256MB max buffer
+#define MAX_DIRECTORY_DEPTH 256                      // Max recursion depth
+#define MAX_TOTAL_FILES 1000000                      // Max files to process
+
     // Processing statistics
     typedef struct
     {

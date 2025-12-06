@@ -1,6 +1,7 @@
 #include "context.h"
 #include "version.h"
 #include "../plugins/plugin.h"
+#include "../filter/filter.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
@@ -10,6 +11,50 @@
 #include <unistd.h>
 #include <time.h>
 #include <errno.h>
+
+// Maximum depth for symlink cycle detection
+#define MAX_VISITED_DIRS 256
+
+// Visited directory tracking for circular symlink detection
+typedef struct {
+    dev_t dev;
+    ino_t ino;
+} VisitedInode;
+
+typedef struct {
+    VisitedInode inodes[MAX_VISITED_DIRS];
+    int count;
+} VisitedSet;
+
+// Check if an inode has been visited (returns 1 if already visited)
+static int visited_set_contains(VisitedSet *set, dev_t dev, ino_t ino)
+{
+    if (!set) return 0;
+    for (int i = 0; i < set->count; i++) {
+        if (set->inodes[i].dev == dev && set->inodes[i].ino == ino) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Add an inode to the visited set (returns 0 on success, -1 if full)
+static int visited_set_add(VisitedSet *set, dev_t dev, ino_t ino)
+{
+    if (!set || set->count >= MAX_VISITED_DIRS) return -1;
+    set->inodes[set->count].dev = dev;
+    set->inodes[set->count].ino = ino;
+    set->count++;
+    return 0;
+}
+
+// Remove the last inode from the visited set (for backtracking)
+static void visited_set_pop(VisitedSet *set)
+{
+    if (set && set->count > 0) {
+        set->count--;
+    }
+}
 
 // Helper function to build full path
 static int build_full_path(char *full_path, size_t max_len, const char *base_path, const char *relative_path)
@@ -47,33 +92,6 @@ static int build_relative_path(char *rel_path, size_t max_len, const char *curre
     }
 }
 
-// Check if file is binary (simplified version)
-static int is_binary_file_simple(const char *filepath)
-{
-    if (!filepath)
-        return -1;
-
-    FILE *file = fopen(filepath, "rb");
-    if (!file)
-        return -1;
-
-    unsigned char buffer[512];
-    size_t bytes_read = fread(buffer, 1, sizeof(buffer), file);
-    fclose(file);
-
-    if (bytes_read == 0)
-        return 0; // Empty file is text
-
-    // Check for null bytes
-    for (size_t i = 0; i < bytes_read; i++)
-    {
-        if (buffer[i] == 0)
-            return 1; // Binary
-    }
-
-    return 0; // Text
-}
-
 // FIXED: Enhanced symlink resolution with proper error handling
 static char *resolve_symlink_safely(FconcatContext *ctx, const char *path, SymlinkHandling handling)
 {
@@ -90,11 +108,20 @@ static char *resolve_symlink_safely(FconcatContext *ctx, const char *path, Symli
     return resolved;
 }
 
-int traverse_directory(FconcatContext *ctx, const char *base_path, const char *relative_path,
-                       int level, DirectoryCallback *callback)
+// Internal traverse function with cycle detection
+static int traverse_directory_internal(FconcatContext *ctx, const char *base_path, const char *relative_path,
+                                        int level, DirectoryCallback *callback, VisitedSet *visited)
 {
     if (!ctx || !base_path || !relative_path || !callback)
         return -1;
+
+    // SAFETY: Prevent stack overflow from deep recursion
+    if (level >= MAX_DIRECTORY_DEPTH)
+    {
+        ctx->warning(ctx, "Maximum directory depth (%d) exceeded, skipping: %s",
+                     MAX_DIRECTORY_DEPTH, relative_path);
+        return 0;
+    }
 
     char full_path[MAX_PATH];
     if (build_full_path(full_path, sizeof(full_path), base_path, relative_path) != 0)
@@ -105,10 +132,33 @@ int traverse_directory(FconcatContext *ctx, const char *base_path, const char *r
 
     ctx->log(ctx, LOG_DEBUG, "Traversing directory: %s (level %d)", full_path, level);
 
-    // FIXED: Graceful permission handling
+    // Get directory inode for cycle detection
+    struct stat dir_st;
+    if (stat(full_path, &dir_st) != 0)
+    {
+        ctx->warning(ctx, "Cannot stat directory: %s - %s", full_path, strerror(errno));
+        return 0;
+    }
+
+    // Check for circular symlinks
+    if (visited_set_contains(visited, dir_st.st_dev, dir_st.st_ino))
+    {
+        ctx->warning(ctx, "Circular symlink detected, skipping: %s", full_path);
+        return 0;
+    }
+
+    // Add to visited set
+    if (visited_set_add(visited, dir_st.st_dev, dir_st.st_ino) != 0)
+    {
+        ctx->warning(ctx, "Too many nested directories (possible symlink loop): %s", full_path);
+        return 0;
+    }
+
+    // Graceful permission handling
     DIR *dir = opendir(full_path);
     if (!dir)
     {
+        visited_set_pop(visited);  // Remove from visited on failure
         if (errno == EACCES)
         {
             ctx->warning(ctx, "Permission denied accessing directory: %s", full_path);
@@ -150,8 +200,8 @@ int traverse_directory(FconcatContext *ctx, const char *base_path, const char *r
             continue;
         }
 
-        // FIXED: Graceful permission handling for stat
-        if (stat(entry_full_path, &st) != 0)
+        // Use lstat() to detect symlinks - stat() follows them and can't detect them!
+        if (lstat(entry_full_path, &st) != 0)
         {
             if (errno == EACCES)
             {
@@ -176,7 +226,7 @@ int traverse_directory(FconcatContext *ctx, const char *base_path, const char *r
         file_info.size = st.st_size;
         file_info.modified_time = st.st_mtime;
         file_info.is_directory = S_ISDIR(st.st_mode);
-        file_info.is_symlink = S_ISLNK(st.st_mode);
+        file_info.is_symlink = S_ISLNK(st.st_mode);  // Now works correctly with lstat()
         file_info.is_binary = false;
         file_info.permissions = st.st_mode;
 
@@ -229,7 +279,7 @@ int traverse_directory(FconcatContext *ctx, const char *base_path, const char *r
         // Check if file is binary (only for files)
         if (entry_type == ENTRY_TYPE_FILE && !file_info.is_symlink)
         {
-            file_info.is_binary = (is_binary_file_simple(entry_full_path) == 1);
+            file_info.is_binary = (filter_is_binary_file(entry_full_path) == 1);
         }
 
         // Call the callback
@@ -246,7 +296,7 @@ int traverse_directory(FconcatContext *ctx, const char *base_path, const char *r
         if (entry_type == ENTRY_TYPE_DIRECTORY)
         {
             const char *recurse_path = resolved_path ? resolved_path : entry_rel_path;
-            int recurse_result = traverse_directory(ctx, base_path, recurse_path, level + 1, callback);
+            int recurse_result = traverse_directory_internal(ctx, base_path, recurse_path, level + 1, callback, visited);
             if (recurse_result != 0)
             {
                 result = recurse_result;
@@ -261,10 +311,19 @@ int traverse_directory(FconcatContext *ctx, const char *base_path, const char *r
     }
 
     closedir(dir);
+    visited_set_pop(visited);  // Remove from visited on exit (backtrack)
     return result;
 }
 
-// Structure processing callback - FIXED: Removed unused parameter
+// Public traverse_directory function - creates visited set and calls internal
+int traverse_directory(FconcatContext *ctx, const char *base_path, const char *relative_path,
+                       int level, DirectoryCallback *callback)
+{
+    VisitedSet visited = {0};
+    return traverse_directory_internal(ctx, base_path, relative_path, level, callback, &visited);
+}
+
+// Structure processing callback
 static int structure_callback(FconcatContext *ctx, const char *path, EntryType type,
                               FileInfo *info, int level, void *user_data)
 {
@@ -333,6 +392,18 @@ static int content_callback(FconcatContext *ctx, const char *path, EntryType typ
     {
         ctx->error(ctx, "Path too long: %s", path);
         return -1;
+    }
+
+    // SAFETY: Check file size limit to prevent resource exhaustion
+    if (info->size > MAX_FILE_SIZE)
+    {
+        ctx->warning(ctx, "File too large, skipping (limit %lluMB): %s (%zu bytes)",
+                     (unsigned long long)(MAX_FILE_SIZE / (1024 * 1024)), path, info->size);
+        if (stats)
+        {
+            stats->skipped_files++;
+        }
+        return 0; // Continue with other files
     }
 
     // FIXED: Graceful file opening with permission handling

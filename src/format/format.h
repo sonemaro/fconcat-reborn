@@ -45,7 +45,6 @@ extern "C"
 
     // Built-in formatters
     FormatPlugin *format_text_plugin(void);
-    FormatPlugin *format_json_plugin(void);
 
 #ifdef __cplusplus
 }

@@ -21,7 +21,6 @@ FormatEngine *format_engine_create(void)
 
     // Register built-in formatters
     format_engine_register_plugin(engine, format_text_plugin());
-    format_engine_register_plugin(engine, format_json_plugin());
 
     return engine;
 }
