@@ -211,8 +211,9 @@ MAKEFLAGS += -j$(shell nproc 2>/dev/null || echo 4)
         windows windows32 windows64 windows-all \
         windows-plugins windows-plugins32 windows-plugins64 windows-plugins-all \
         benchmark bench-clean bench-report profile release debug debug-plugins \
-        debug-plugins-only sanitize analyze format-check \
-        docs docs-clean package dist help debug-info
+        debug-plugins-only sanitize msan tsan analyze format-check \
+        docs docs-clean package dist help debug-info \
+        coverage-build coverage coverage-clean
 
 # ============================================================================
 # MAIN TARGETS
@@ -362,6 +363,19 @@ sanitize: LDFLAGS += -fsanitize=address -fsanitize=undefined
 sanitize: $(TARGET)
 	@echo "🔬 Built with AddressSanitizer and UBSan"
 
+# MemorySanitizer build (requires clang)
+msan: CC = clang
+msan: CFLAGS += -fsanitize=memory -fno-omit-frame-pointer -g -O1
+msan: LDFLAGS += -fsanitize=memory
+msan: $(TARGET)
+	@echo "🔬 Built with MemorySanitizer"
+
+# ThreadSanitizer build
+tsan: CFLAGS += -fsanitize=thread -g -O1
+tsan: LDFLAGS += -fsanitize=thread
+tsan: $(TARGET)
+	@echo "🔬 Built with ThreadSanitizer"
+
 # Static analysis (requires cppcheck)
 analyze:
 	@echo "🔍 Running static analysis..."
@@ -373,6 +387,41 @@ format-check:
 	@echo "🎨 Checking code formatting..."
 	@command -v clang-format >/dev/null 2>&1 || { echo "clang-format not found."; exit 1; }
 	@find $(SRC_DIR) $(INCLUDE_DIR) -name "*.c" -o -name "*.h" | xargs clang-format -style=file -dry-run -Werror
+
+# ============================================================================
+# CODE COVERAGE
+# ============================================================================
+
+# Coverage instrumentation flags
+COVERAGE_CFLAGS = -fprofile-arcs -ftest-coverage -O0 -g
+COVERAGE_LDFLAGS = -lgcov --coverage
+
+# Build with coverage instrumentation
+coverage-build: CFLAGS += $(COVERAGE_CFLAGS)
+coverage-build: LDFLAGS += $(COVERAGE_LDFLAGS)
+coverage-build: $(TARGET) $(TEST_TARGET)
+	@echo "📊 Built with coverage instrumentation"
+
+# Run tests and generate coverage report
+coverage: clean coverage-build
+	@echo "📊 Running tests with coverage..."
+	./$(TEST_TARGET)
+	@echo "📊 Generating coverage report..."
+	@command -v lcov >/dev/null 2>&1 || { echo "lcov not found. Install lcov for coverage reports."; exit 1; }
+	lcov --capture --directory . --output-file coverage.info --rc lcov_branch_coverage=1
+	lcov --remove coverage.info '/usr/*' '*/tests/*' --output-file coverage.info --rc lcov_branch_coverage=1
+	@command -v genhtml >/dev/null 2>&1 || { echo "genhtml not found. Install lcov for HTML reports."; exit 1; }
+	genhtml coverage.info --output-directory coverage_html --branch-coverage
+	@echo "📊 Coverage report generated: coverage_html/index.html"
+	@lcov --summary coverage.info
+
+# Clean coverage artifacts
+coverage-clean:
+	@echo "🧹 Cleaning coverage artifacts..."
+	find . -name "*.gcda" -delete
+	find . -name "*.gcno" -delete
+	rm -f coverage.info
+	rm -rf coverage_html
 
 # ============================================================================
 # CROSS-COMPILATION TARGETS (Enhanced)

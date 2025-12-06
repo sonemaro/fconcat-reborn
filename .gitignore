@@ -1,12 +1,36 @@
 # Build outputs
 fconcat
 fconcat.exe
+test_fconcat
+test_fconcat.exe
+bench_fconcat
+bench_fconcat.exe
+
+# Object files and dependencies
 *.o
+*.d
+*.so
+*.a
+*.dll
+
+# Coverage artifacts
+*.gcno
+*.gcda
+*.gcov
+coverage.info
+coverage_html/
+
+# Profiling
+gmon.out
+*.profraw
+*.profdata
 
 # IDE files
 .vscode/
 .idea/
 *.swp
+*.swo
+*~
 
 # OS files
 .DS_Store
@@ -14,20 +38,13 @@ Thumbs.db
 
 # Test outputs
 out.txt
-*.txt
-
-fconcat
-fconcat.exe
-*.o
-bench_fconcat
-
-# IDE files
-// ...existing code...
-# Test outputs
-out.txt
-*.txt
 benchmarks/*.tmp
 
-*.d
-*.o
-*.so
+# Build directories
+build/
+dist/
+
+# Temporary files
+*.tmp
+*.bak
+*.log

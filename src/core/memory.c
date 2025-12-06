@@ -12,6 +12,7 @@
 // Magic values are randomized at startup to prevent predictable exploitation
 static uint32_t g_memory_magic = 0;
 static uint32_t g_memory_freed_magic = 0;
+static uint32_t g_memory_canary = 0;  // Tail canary for buffer overflow detection
 static int g_magic_initialized = 0;
 
 // Initialize magic values with random data (called once)
@@ -24,13 +25,18 @@ static void init_memory_magic(void)
     if (fd >= 0) {
         ssize_t r1 = read(fd, &g_memory_magic, sizeof(g_memory_magic));
         ssize_t r2 = read(fd, &g_memory_freed_magic, sizeof(g_memory_freed_magic));
+        ssize_t r3 = read(fd, &g_memory_canary, sizeof(g_memory_canary));
         close(fd);
         
-        if (r1 == sizeof(g_memory_magic) && r2 == sizeof(g_memory_freed_magic)) {
+        if (r1 == sizeof(g_memory_magic) && r2 == sizeof(g_memory_freed_magic) &&
+            r3 == sizeof(g_memory_canary)) {
             // Ensure magic values are non-zero and different
             if (g_memory_magic == 0) g_memory_magic = 0xDEADBEEF;
             if (g_memory_freed_magic == 0) g_memory_freed_magic = 0xFEEDFACE;
+            if (g_memory_canary == 0) g_memory_canary = 0xCAFEBABE;
             if (g_memory_magic == g_memory_freed_magic) g_memory_freed_magic ^= 0x12345678;
+            if (g_memory_canary == g_memory_magic) g_memory_canary ^= 0x87654321;
+            if (g_memory_canary == g_memory_freed_magic) g_memory_canary ^= 0xABCDEF00;
             g_magic_initialized = 1;
             return;
         }
@@ -40,21 +46,26 @@ static void init_memory_magic(void)
     srandom((unsigned int)(time(NULL) ^ (uintptr_t)&g_memory_magic));
     g_memory_magic = (uint32_t)random() ^ 0xDEADBEEF;
     g_memory_freed_magic = (uint32_t)random() ^ 0xFEEDFACE;
+    g_memory_canary = (uint32_t)random() ^ 0xCAFEBABE;
     
     // Ensure magic values are non-zero and different
     if (g_memory_magic == 0) g_memory_magic = 0xDEADBEEF;
     if (g_memory_freed_magic == 0) g_memory_freed_magic = 0xFEEDFACE;
+    if (g_memory_canary == 0) g_memory_canary = 0xCAFEBABE;
     if (g_memory_magic == g_memory_freed_magic) g_memory_freed_magic ^= 0x12345678;
+    if (g_memory_canary == g_memory_magic) g_memory_canary ^= 0x87654321;
+    if (g_memory_canary == g_memory_freed_magic) g_memory_canary ^= 0xABCDEF00;
     
     g_magic_initialized = 1;
 }
 
 typedef struct {
-    size_t size;       // Size of user allocation (not including header)
-    uint32_t magic;    // Magic number for corruption detection
+    size_t size;       // Size of user allocation (not including header/canary)
+    uint32_t magic;    // Magic number for corruption detection (header canary)
 } AllocationHeader;
 
 #define HEADER_SIZE (sizeof(AllocationHeader))
+#define CANARY_SIZE (sizeof(uint32_t))  // Tail canary size
 
 // Get user pointer from header
 static inline void *header_to_user(AllocationHeader *header) {
@@ -64,6 +75,23 @@ static inline void *header_to_user(AllocationHeader *header) {
 // Get header from user pointer
 static inline AllocationHeader *user_to_header(void *ptr) {
     return (AllocationHeader *)((char *)ptr - HEADER_SIZE);
+}
+
+// Get tail canary pointer from header (placed after user data)
+static inline uint32_t *get_tail_canary(AllocationHeader *header) {
+    return (uint32_t *)((char *)header + HEADER_SIZE + header->size);
+}
+
+// Write tail canary value
+static inline void write_tail_canary(AllocationHeader *header) {
+    uint32_t *canary = get_tail_canary(header);
+    *canary = g_memory_canary;
+}
+
+// Verify tail canary (returns 1 if valid, 0 if corrupted)
+static inline int verify_tail_canary(AllocationHeader *header) {
+    uint32_t *canary = get_tail_canary(header);
+    return (*canary == g_memory_canary);
 }
 
 #define SMALL_BUFFER_SIZE 4096   // 4KB
@@ -312,13 +340,16 @@ void *memory_alloc(MemoryManager *manager, size_t size)
     // Ensure magic is initialized
     init_memory_magic();
     
-    // Allocate with header for size tracking
-    AllocationHeader *header = (AllocationHeader *)malloc(HEADER_SIZE + size);
+    // Allocate with header + user data + tail canary
+    AllocationHeader *header = (AllocationHeader *)malloc(HEADER_SIZE + size + CANARY_SIZE);
     if (!header)
         return NULL;
 
     header->size = size;
     header->magic = g_memory_magic;
+    
+    // Write tail canary after user data
+    write_tail_canary(header);
 
     if (manager && manager->track_allocations)
     {
@@ -350,21 +381,30 @@ void *memory_realloc(MemoryManager *manager, void *ptr, size_t size)
 
     AllocationHeader *old_header = user_to_header(ptr);
     
-    // Validate magic number
+    // Validate header magic number
     if (old_header->magic != g_memory_magic) {
-        fprintf(stderr, "memory_realloc: corruption detected or invalid pointer!\n");
+        fprintf(stderr, "memory_realloc: header corruption detected or invalid pointer!\n");
+        return NULL;
+    }
+    
+    // Verify tail canary (buffer overflow detection)
+    if (!verify_tail_canary(old_header)) {
+        fprintf(stderr, "memory_realloc: buffer overflow detected (tail canary corrupted)!\n");
         return NULL;
     }
     
     size_t old_size = old_header->size;
 
-    // Reallocate with header
-    AllocationHeader *new_header = (AllocationHeader *)realloc(old_header, HEADER_SIZE + size);
+    // Reallocate with header + new size + tail canary
+    AllocationHeader *new_header = (AllocationHeader *)realloc(old_header, HEADER_SIZE + size + CANARY_SIZE);
     if (!new_header)
         return NULL;
 
     new_header->size = size;
-    // magic stays the same
+    // header magic stays the same
+    
+    // Write new tail canary at new position
+    write_tail_canary(new_header);
 
     if (manager && manager->track_allocations)
     {
@@ -391,14 +431,20 @@ void memory_free(MemoryManager *manager, void *ptr)
 
     AllocationHeader *header = user_to_header(ptr);
     
-    // Validate magic number
+    // Validate header magic number (double-free detection)
     if (header->magic == g_memory_freed_magic) {
         fprintf(stderr, "memory_free: double-free detected!\n");
         return;
     }
     if (header->magic != g_memory_magic) {
-        fprintf(stderr, "memory_free: corruption detected or invalid pointer!\n");
+        fprintf(stderr, "memory_free: header corruption detected or invalid pointer!\n");
         return;
+    }
+    
+    // Verify tail canary (buffer overflow detection)
+    if (!verify_tail_canary(header)) {
+        fprintf(stderr, "memory_free: buffer overflow detected (tail canary corrupted)!\n");
+        // Still allow freeing to avoid leak, but warn loudly
     }
     
     size_t size = header->size;

@@ -56,6 +56,89 @@ static void visited_set_pop(VisitedSet *set)
     }
 }
 
+// ============================================================================
+// ITERATIVE DIRECTORY STACK - Eliminates recursive stack overflow risk
+// ============================================================================
+
+#define DIR_STACK_INITIAL_CAPACITY 256
+
+typedef struct {
+    char path[MAX_PATH];           // Full path to directory
+    char relative_path[MAX_PATH];  // Relative path from base
+    DIR *dir;                      // Open directory handle
+    int level;                     // Current depth level
+    ino_t inode;                   // For visited set cleanup on pop
+    dev_t dev;                     // Device ID for visited set
+} DirStackEntry;
+
+typedef struct {
+    DirStackEntry *entries;
+    int size;
+    int capacity;
+} DirStack;
+
+static DirStack *dir_stack_create(void)
+{
+    DirStack *stack = calloc(1, sizeof(DirStack));
+    if (!stack) return NULL;
+    
+    stack->entries = calloc(DIR_STACK_INITIAL_CAPACITY, sizeof(DirStackEntry));
+    if (!stack->entries) {
+        free(stack);
+        return NULL;
+    }
+    stack->capacity = DIR_STACK_INITIAL_CAPACITY;
+    stack->size = 0;
+    return stack;
+}
+
+static void dir_stack_destroy(DirStack *stack)
+{
+    if (!stack) return;
+    // Close any remaining open directories
+    for (int i = 0; i < stack->size; i++) {
+        if (stack->entries[i].dir) {
+            closedir(stack->entries[i].dir);
+        }
+    }
+    free(stack->entries);
+    free(stack);
+}
+
+static int dir_stack_push(DirStack *stack, const char *path, const char *rel_path, 
+                          DIR *dir, int level, dev_t dev, ino_t inode)
+{
+    if (!stack || stack->size >= stack->capacity) return -1;
+    
+    DirStackEntry *entry = &stack->entries[stack->size];
+    snprintf(entry->path, MAX_PATH, "%s", path);
+    snprintf(entry->relative_path, MAX_PATH, "%s", rel_path);
+    entry->dir = dir;
+    entry->level = level;
+    entry->dev = dev;
+    entry->inode = inode;
+    stack->size++;
+    return 0;
+}
+
+static DirStackEntry *dir_stack_peek(DirStack *stack)
+{
+    if (!stack || stack->size == 0) return NULL;
+    return &stack->entries[stack->size - 1];
+}
+
+static void dir_stack_pop(DirStack *stack)
+{
+    if (stack && stack->size > 0) {
+        stack->size--;
+    }
+}
+
+static int dir_stack_is_empty(DirStack *stack)
+{
+    return (!stack || stack->size == 0);
+}
+
 // Helper function to build full path
 static int build_full_path(char *full_path, size_t max_len, const char *base_path, const char *relative_path)
 {
@@ -108,116 +191,109 @@ static char *resolve_symlink_safely(FconcatContext *ctx, const char *path, Symli
     return resolved;
 }
 
-// Internal traverse function with cycle detection
+// Internal traverse function with ITERATIVE stack-based traversal
+// This eliminates recursive stack overflow risk (~8KB per frame * 256 depth = 2MB)
 static int traverse_directory_internal(FconcatContext *ctx, const char *base_path, const char *relative_path,
                                         int level, DirectoryCallback *callback, VisitedSet *visited)
 {
     if (!ctx || !base_path || !relative_path || !callback)
         return -1;
 
-    // SAFETY: Prevent stack overflow from deep recursion
-    if (level >= MAX_DIRECTORY_DEPTH)
-    {
-        ctx->warning(ctx, "Maximum directory depth (%d) exceeded, skipping: %s",
-                     MAX_DIRECTORY_DEPTH, relative_path);
-        return 0;
-    }
-
-    char full_path[MAX_PATH];
-    if (build_full_path(full_path, sizeof(full_path), base_path, relative_path) != 0)
-    {
-        ctx->error(ctx, "Path too long: %s/%s", base_path, relative_path);
+    // Create explicit stack for iterative traversal
+    DirStack *stack = dir_stack_create();
+    if (!stack) {
+        ctx->error(ctx, "Failed to allocate directory stack");
         return -1;
     }
 
-    ctx->log(ctx, LOG_DEBUG, "Traversing directory: %s (level %d)", full_path, level);
-
-    // Get directory inode for cycle detection
-    struct stat dir_st;
-    if (stat(full_path, &dir_st) != 0)
-    {
-        ctx->warning(ctx, "Cannot stat directory: %s - %s", full_path, strerror(errno));
-        return 0;
-    }
-
-    // Check for circular symlinks
-    if (visited_set_contains(visited, dir_st.st_dev, dir_st.st_ino))
-    {
-        ctx->warning(ctx, "Circular symlink detected, skipping: %s", full_path);
-        return 0;
-    }
-
-    // Add to visited set
-    if (visited_set_add(visited, dir_st.st_dev, dir_st.st_ino) != 0)
-    {
-        ctx->warning(ctx, "Too many nested directories (possible symlink loop): %s", full_path);
-        return 0;
-    }
-
-    // Graceful permission handling
-    DIR *dir = opendir(full_path);
-    if (!dir)
-    {
-        visited_set_pop(visited);  // Remove from visited on failure
-        if (errno == EACCES)
-        {
-            ctx->warning(ctx, "Permission denied accessing directory: %s", full_path);
-            return 0; // Continue processing other directories
-        }
-        else if (errno == ENOENT)
-        {
-            ctx->warning(ctx, "Directory not found: %s", full_path);
-            return 0; // Continue processing
-        }
-        else
-        {
-            ctx->warning(ctx, "Cannot open directory: %s - %s", full_path, strerror(errno));
-            return 0; // Continue processing
-        }
-    }
-
-    struct dirent *entry;
-    struct stat st;
     int result = 0;
+    char initial_full_path[MAX_PATH];
+    
+    if (build_full_path(initial_full_path, sizeof(initial_full_path), base_path, relative_path) != 0) {
+        ctx->error(ctx, "Path too long: %s/%s", base_path, relative_path);
+        dir_stack_destroy(stack);
+        return -1;
+    }
 
-    while ((entry = readdir(dir)) != NULL)
-    {
+    // Get initial directory inode
+    struct stat initial_st;
+    if (stat(initial_full_path, &initial_st) != 0) {
+        ctx->warning(ctx, "Cannot stat directory: %s - %s", initial_full_path, strerror(errno));
+        dir_stack_destroy(stack);
+        return 0;
+    }
+
+    // Open initial directory
+    DIR *initial_dir = opendir(initial_full_path);
+    if (!initial_dir) {
+        if (errno == EACCES) {
+            ctx->warning(ctx, "Permission denied accessing directory: %s", initial_full_path);
+        } else {
+            ctx->warning(ctx, "Cannot open directory: %s - %s", initial_full_path, strerror(errno));
+        }
+        dir_stack_destroy(stack);
+        return 0;
+    }
+
+    // Add initial directory to visited set
+    visited_set_add(visited, initial_st.st_dev, initial_st.st_ino);
+
+    // Push initial directory onto stack
+    if (dir_stack_push(stack, initial_full_path, relative_path, initial_dir, level, 
+                       initial_st.st_dev, initial_st.st_ino) != 0) {
+        closedir(initial_dir);
+        dir_stack_destroy(stack);
+        return -1;
+    }
+
+    // Iterative traversal loop
+    while (!dir_stack_is_empty(stack)) {
+        DirStackEntry *current = dir_stack_peek(stack);
+        struct dirent *entry = readdir(current->dir);
+
+        if (!entry) {
+            // Directory exhausted - pop and continue
+            closedir(current->dir);
+            current->dir = NULL;
+            visited_set_pop(visited);
+            dir_stack_pop(stack);
+            continue;
+        }
+
+        // Skip . and ..
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
             continue;
+
+        // SAFETY: Check depth limit
+        if (current->level >= MAX_DIRECTORY_DEPTH) {
+            ctx->warning(ctx, "Maximum directory depth (%d) exceeded, skipping deeper entries",
+                         MAX_DIRECTORY_DEPTH);
+            continue;
+        }
 
         char entry_full_path[MAX_PATH];
         char entry_rel_path[MAX_PATH];
 
-        if (build_full_path(entry_full_path, sizeof(entry_full_path), full_path, entry->d_name) != 0)
-        {
+        if (build_full_path(entry_full_path, sizeof(entry_full_path), current->path, entry->d_name) != 0) {
             ctx->warning(ctx, "Path too long, skipping: %s", entry->d_name);
             continue;
         }
 
-        if (build_relative_path(entry_rel_path, sizeof(entry_rel_path), relative_path, entry->d_name) != 0)
-        {
+        if (build_relative_path(entry_rel_path, sizeof(entry_rel_path), current->relative_path, entry->d_name) != 0) {
             ctx->warning(ctx, "Relative path too long, skipping: %s", entry->d_name);
             continue;
         }
 
-        // Use lstat() to detect symlinks - stat() follows them and can't detect them!
-        if (lstat(entry_full_path, &st) != 0)
-        {
-            if (errno == EACCES)
-            {
+        struct stat st;
+        if (lstat(entry_full_path, &st) != 0) {
+            if (errno == EACCES) {
                 ctx->warning(ctx, "Permission denied accessing: %s", entry_full_path);
-                continue; // Skip this entry but continue processing
-            }
-            else if (errno == ENOENT)
-            {
+            } else if (errno == ENOENT) {
                 ctx->warning(ctx, "File disappeared during processing: %s", entry_full_path);
-                continue; // Skip this entry
-            }
-            else
-            {
+            } else {
                 ctx->warning(ctx, "Cannot stat: %s - %s", entry_full_path, strerror(errno));
-                continue; // Skip this entry
             }
+            continue;
         }
 
         // Create FileInfo structure
@@ -226,29 +302,22 @@ static int traverse_directory_internal(FconcatContext *ctx, const char *base_pat
         file_info.size = st.st_size;
         file_info.modified_time = st.st_mtime;
         file_info.is_directory = S_ISDIR(st.st_mode);
-        file_info.is_symlink = S_ISLNK(st.st_mode);  // Now works correctly with lstat()
+        file_info.is_symlink = S_ISLNK(st.st_mode);
         file_info.is_binary = false;
         file_info.permissions = st.st_mode;
 
-        // FIXED: Enhanced symlink handling
+        // Handle symlinks
         char *resolved_path = NULL;
-        if (file_info.is_symlink)
-        {
+        if (file_info.is_symlink) {
             const ResolvedConfig *config = (const ResolvedConfig *)ctx->config;
-            if (config->symlink_handling == SYMLINK_FOLLOW)
-            {
+            if (config->symlink_handling == SYMLINK_FOLLOW) {
                 resolved_path = resolve_symlink_safely(ctx, entry_full_path, config->symlink_handling);
-                if (resolved_path)
-                {
-                    // Update file info based on resolved target
+                if (resolved_path) {
                     struct stat resolved_st;
-                    if (stat(resolved_path, &resolved_st) == 0)
-                    {
+                    if (stat(resolved_path, &resolved_st) == 0) {
                         file_info.is_directory = S_ISDIR(resolved_st.st_mode);
                         file_info.size = resolved_st.st_size;
-                    }
-                    else
-                    {
+                    } else {
                         ctx->warning(ctx, "Cannot stat symlink target: %s", resolved_path);
                         free(resolved_path);
                         resolved_path = NULL;
@@ -257,66 +326,80 @@ static int traverse_directory_internal(FconcatContext *ctx, const char *base_pat
             }
         }
 
-        // Get internal state to access filter engine
+        // Check filters
         InternalContextState *internal = (InternalContextState *)ctx->internal_state;
-
-        // Check if path should be included
-        if (!filter_engine_should_include_path(internal->filter_engine, ctx, entry_rel_path, &file_info))
-        {
+        if (!filter_engine_should_include_path(internal->filter_engine, ctx, entry_rel_path, &file_info)) {
             ctx->log(ctx, LOG_DEBUG, "Excluding path: %s", entry_rel_path);
-            if (resolved_path)
-                free(resolved_path);
+            if (resolved_path) free(resolved_path);
             continue;
         }
 
-        // Update context for current file (safe: file_info is only used synchronously in this iteration)
+        // Update context
         ctx->current_file_path = entry_rel_path;
-        // cppcheck-suppress autoVariables
         ctx->current_file_info = &file_info;
-        ctx->current_directory_level = level;
+        ctx->current_directory_level = current->level;
 
         EntryType entry_type = file_info.is_directory ? ENTRY_TYPE_DIRECTORY : ENTRY_TYPE_FILE;
 
-        // Check if file is binary (only for files)
-        if (entry_type == ENTRY_TYPE_FILE && !file_info.is_symlink)
-        {
+        // Check binary
+        if (entry_type == ENTRY_TYPE_FILE && !file_info.is_symlink) {
             file_info.is_binary = (filter_is_binary_file(entry_full_path) == 1);
         }
 
-        // Call the callback
-        int callback_result = callback->handle_entry(ctx, entry_rel_path, entry_type, &file_info, level, callback->user_data);
-        
-        // Clear file info pointer after callback (defensive: prevents stale pointer access)
+        // Callback
+        int callback_result = callback->handle_entry(ctx, entry_rel_path, entry_type, &file_info, 
+                                                     current->level, callback->user_data);
         ctx->current_file_info = NULL;
-        
-        if (callback_result != 0)
-        {
+
+        if (callback_result != 0) {
             result = callback_result;
-            if (resolved_path)
-                free(resolved_path);
+            if (resolved_path) free(resolved_path);
             break;
         }
 
-        // Recurse into subdirectories
-        if (entry_type == ENTRY_TYPE_DIRECTORY)
-        {
-            const char *recurse_path = resolved_path ? resolved_path : entry_rel_path;
-            int recurse_result = traverse_directory_internal(ctx, base_path, recurse_path, level + 1, callback, visited);
-            if (recurse_result != 0)
-            {
-                result = recurse_result;
-                if (resolved_path)
-                    free(resolved_path);
-                break;
+        // Handle subdirectories - push onto stack instead of recursing
+        if (entry_type == ENTRY_TYPE_DIRECTORY) {
+            const char *subdir_path = resolved_path ? resolved_path : entry_full_path;
+            
+            struct stat subdir_st;
+            if (stat(subdir_path, &subdir_st) != 0) {
+                ctx->warning(ctx, "Cannot stat subdirectory: %s", subdir_path);
+                if (resolved_path) free(resolved_path);
+                continue;
+            }
+
+            // Check for cycles
+            if (visited_set_contains(visited, subdir_st.st_dev, subdir_st.st_ino)) {
+                ctx->warning(ctx, "Circular symlink detected, skipping: %s", subdir_path);
+                if (resolved_path) free(resolved_path);
+                continue;
+            }
+
+            DIR *subdir = opendir(subdir_path);
+            if (!subdir) {
+                if (errno == EACCES) {
+                    ctx->warning(ctx, "Permission denied accessing directory: %s", subdir_path);
+                } else {
+                    ctx->warning(ctx, "Cannot open directory: %s - %s", subdir_path, strerror(errno));
+                }
+                if (resolved_path) free(resolved_path);
+                continue;
+            }
+
+            visited_set_add(visited, subdir_st.st_dev, subdir_st.st_ino);
+
+            if (dir_stack_push(stack, subdir_path, entry_rel_path, subdir, current->level + 1,
+                               subdir_st.st_dev, subdir_st.st_ino) != 0) {
+                closedir(subdir);
+                visited_set_pop(visited);
+                ctx->warning(ctx, "Directory stack full, skipping: %s", subdir_path);
             }
         }
 
-        if (resolved_path)
-            free(resolved_path);
+        if (resolved_path) free(resolved_path);
     }
 
-    closedir(dir);
-    visited_set_pop(visited);  // Remove from visited on exit (backtrack)
+    dir_stack_destroy(stack);
     return result;
 }
 
