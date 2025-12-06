@@ -54,9 +54,10 @@ PLUGIN_IMPL_SRCS = $(filter-out $(SRC_DIR)/plugins/plugin.c, $(wildcard $(SRC_DI
 HEADERS = $(wildcard $(INCLUDE_DIR)/*.h) $(wildcard $(SRC_DIR)/*/*.h)
 
 # Test sources
+TEST_MAIN_SRC = $(TEST_DIR)/test_main.c
 UNIT_TEST_SRCS = $(wildcard $(TEST_DIR)/unit/*.c)
 INTEGRATION_TEST_SRCS = $(wildcard $(TEST_DIR)/integration/*.c)
-TEST_OBJS = $(UNIT_TEST_SRCS:.c=.o) $(INTEGRATION_TEST_SRCS:.c=.o)
+TEST_OBJS = $(TEST_MAIN_SRC:.c=.o) $(UNIT_TEST_SRCS:.c=.o) $(INTEGRATION_TEST_SRCS:.c=.o)
 
 # Plugin discovery
 PLUGIN_SOURCES = $(wildcard $(PLUGIN_DIR)/*.c)
@@ -154,7 +155,7 @@ else
 endif
 
 # Test settings
-TEST_CFLAGS = $(CFLAGS) -I$(INCLUDE_DIR) -DUNIT_TESTING
+TEST_CFLAGS = $(CFLAGS) -I$(INCLUDE_DIR) -I$(SRC_DIR) -I$(SRC_DIR)/core -DUNIT_TESTING
 TEST_LDFLAGS = $(LDFLAGS)
 TEST_LIBS = $(LIBS)
 

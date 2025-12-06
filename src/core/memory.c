@@ -4,10 +4,50 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <time.h>
 
 // Allocation header for accurate memory tracking
-#define MEMORY_MAGIC 0xDEADBEEF
-#define MEMORY_FREED_MAGIC 0xFEEDFACE
+// Magic values are randomized at startup to prevent predictable exploitation
+static uint32_t g_memory_magic = 0;
+static uint32_t g_memory_freed_magic = 0;
+static int g_magic_initialized = 0;
+
+// Initialize magic values with random data (called once)
+static void init_memory_magic(void)
+{
+    if (g_magic_initialized) return;
+    
+    // Try /dev/urandom first (cryptographically secure)
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd >= 0) {
+        ssize_t r1 = read(fd, &g_memory_magic, sizeof(g_memory_magic));
+        ssize_t r2 = read(fd, &g_memory_freed_magic, sizeof(g_memory_freed_magic));
+        close(fd);
+        
+        if (r1 == sizeof(g_memory_magic) && r2 == sizeof(g_memory_freed_magic)) {
+            // Ensure magic values are non-zero and different
+            if (g_memory_magic == 0) g_memory_magic = 0xDEADBEEF;
+            if (g_memory_freed_magic == 0) g_memory_freed_magic = 0xFEEDFACE;
+            if (g_memory_magic == g_memory_freed_magic) g_memory_freed_magic ^= 0x12345678;
+            g_magic_initialized = 1;
+            return;
+        }
+    }
+    
+    // Fallback: use time-based seed + address randomization
+    srandom((unsigned int)(time(NULL) ^ (uintptr_t)&g_memory_magic));
+    g_memory_magic = (uint32_t)random() ^ 0xDEADBEEF;
+    g_memory_freed_magic = (uint32_t)random() ^ 0xFEEDFACE;
+    
+    // Ensure magic values are non-zero and different
+    if (g_memory_magic == 0) g_memory_magic = 0xDEADBEEF;
+    if (g_memory_freed_magic == 0) g_memory_freed_magic = 0xFEEDFACE;
+    if (g_memory_magic == g_memory_freed_magic) g_memory_freed_magic ^= 0x12345678;
+    
+    g_magic_initialized = 1;
+}
 
 typedef struct {
     size_t size;       // Size of user allocation (not including header)
@@ -269,13 +309,16 @@ void memory_manager_destroy(MemoryManager *manager)
 
 void *memory_alloc(MemoryManager *manager, size_t size)
 {
+    // Ensure magic is initialized
+    init_memory_magic();
+    
     // Allocate with header for size tracking
     AllocationHeader *header = (AllocationHeader *)malloc(HEADER_SIZE + size);
     if (!header)
         return NULL;
 
     header->size = size;
-    header->magic = MEMORY_MAGIC;
+    header->magic = g_memory_magic;
 
     if (manager && manager->track_allocations)
     {
@@ -308,7 +351,7 @@ void *memory_realloc(MemoryManager *manager, void *ptr, size_t size)
     AllocationHeader *old_header = user_to_header(ptr);
     
     // Validate magic number
-    if (old_header->magic != MEMORY_MAGIC) {
+    if (old_header->magic != g_memory_magic) {
         fprintf(stderr, "memory_realloc: corruption detected or invalid pointer!\n");
         return NULL;
     }
@@ -349,11 +392,11 @@ void memory_free(MemoryManager *manager, void *ptr)
     AllocationHeader *header = user_to_header(ptr);
     
     // Validate magic number
-    if (header->magic == MEMORY_FREED_MAGIC) {
+    if (header->magic == g_memory_freed_magic) {
         fprintf(stderr, "memory_free: double-free detected!\n");
         return;
     }
-    if (header->magic != MEMORY_MAGIC) {
+    if (header->magic != g_memory_magic) {
         fprintf(stderr, "memory_free: corruption detected or invalid pointer!\n");
         return;
     }
@@ -371,7 +414,7 @@ void memory_free(MemoryManager *manager, void *ptr)
     }
 
     // Mark as freed before actually freeing (helps detect use-after-free in debug)
-    header->magic = MEMORY_FREED_MAGIC;
+    header->magic = g_memory_freed_magic;
     free(header);
 }
 

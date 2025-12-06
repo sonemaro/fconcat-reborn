@@ -265,7 +265,16 @@ static int add_output_file_exclusion(FilterEngine *engine, const ResolvedConfig 
             .destroy_context = destroy_exclude_context_wrapper,
             .context = ctx};
 
-        filter_engine_add_rule_internal(engine, &rule);
+        if (filter_engine_add_rule_internal(engine, &rule) != 0)
+        {
+            // Clean up ctx on failure - it wasn't added to the engine
+            destroy_exclude_context_wrapper(ctx);
+            if (normalized_input != abs_input)
+                free(normalized_input);
+            free(abs_input);
+            free(abs_output);
+            return -1;
+        }
     }
 
     if (normalized_input != abs_input)
@@ -312,7 +321,7 @@ int filter_engine_register_plugin(FilterEngine *engine, FilterPlugin *plugin)
     return 0;
 }
 
-int filter_engine_add_rule_internal(FilterEngine *engine, FilterRule *rule)
+int filter_engine_add_rule_internal(FilterEngine *engine, const FilterRule *rule)
 {
     if (!engine || !rule)
         return -1;

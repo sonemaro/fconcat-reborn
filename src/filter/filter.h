@@ -67,7 +67,7 @@ extern "C"
     int filter_binary_detection_init(FilterEngine *engine, const ResolvedConfig *config);
     int filter_symlink_handling_init(FilterEngine *engine, const ResolvedConfig *config);
 
-    int filter_engine_add_rule_internal(FilterEngine *engine, FilterRule *rule);
+    int filter_engine_add_rule_internal(FilterEngine *engine, const FilterRule *rule);
     int filter_exclude_patterns_init_internal(FilterEngine *engine, const ResolvedConfig *config);
     int filter_include_patterns_init_internal(FilterEngine *engine, const ResolvedConfig *config); 
     int filter_binary_detection_init_internal(FilterEngine *engine, const ResolvedConfig *config);

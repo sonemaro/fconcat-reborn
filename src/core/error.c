@@ -49,10 +49,13 @@ void error_report_context(ErrorManager *manager, FconcatErrorCode code, const ch
 
     ErrorContext *ctx = &manager->errors[manager->error_count];
     ctx->code = code;
-    ctx->file = strdup(file);
+    ctx->file = file ? strdup(file) : NULL;
     ctx->line = line;
-    ctx->function = strdup(function);
+    ctx->function = function ? strdup(function) : NULL;
     ctx->timestamp = time(NULL);
+
+    // Check if strdup failed (out of memory) - still record error but with NULL fields
+    // This is acceptable degradation since we're already in an error path
 
     // Format message
     va_list args;
@@ -60,18 +63,26 @@ void error_report_context(ErrorManager *manager, FconcatErrorCode code, const ch
     int len = vsnprintf(NULL, 0, format, args);
     va_end(args);
 
-    ctx->message = malloc(len + 1);
-    if (ctx->message)
-    {
-        va_start(args, format);
-        vsnprintf(ctx->message, len + 1, format, args);
-        va_end(args);
+    if (len < 0) {
+        ctx->message = NULL;
+    } else {
+        ctx->message = malloc((size_t)len + 1);
+        if (ctx->message)
+        {
+            va_start(args, format);
+            vsnprintf(ctx->message, (size_t)len + 1, format, args);
+            va_end(args);
+        }
     }
 
     manager->error_count++;
 
-    // Also print to stderr
-    fprintf(stderr, "[ERROR] %s:%d in %s(): %s\n", file, line, function, ctx->message);
+    // Also print to stderr (handle NULL fields gracefully)
+    fprintf(stderr, "[ERROR] %s:%d in %s(): %s\n", 
+            file ? file : "unknown", 
+            line, 
+            function ? function : "unknown", 
+            ctx->message ? ctx->message : "(out of memory)");
 
     pthread_mutex_unlock(&manager->mutex);
 }
@@ -85,9 +96,9 @@ void error_report(ErrorManager *manager, FconcatErrorCode code, const char *form
 
     ErrorContext *ctx = &manager->errors[manager->error_count];
     ctx->code = code;
-    ctx->file = strdup("unknown");
+    ctx->file = strdup("unknown");      // May be NULL on OOM - acceptable degradation
     ctx->line = 0;
-    ctx->function = strdup("unknown");
+    ctx->function = strdup("unknown");  // May be NULL on OOM - acceptable degradation
     ctx->timestamp = time(NULL);
 
     // Format message
@@ -96,18 +107,22 @@ void error_report(ErrorManager *manager, FconcatErrorCode code, const char *form
     int len = vsnprintf(NULL, 0, format, args);
     va_end(args);
 
-    ctx->message = malloc(len + 1);
-    if (ctx->message)
-    {
-        va_start(args, format);
-        vsnprintf(ctx->message, len + 1, format, args);
-        va_end(args);
+    if (len < 0) {
+        ctx->message = NULL;
+    } else {
+        ctx->message = malloc((size_t)len + 1);
+        if (ctx->message)
+        {
+            va_start(args, format);
+            vsnprintf(ctx->message, (size_t)len + 1, format, args);
+            va_end(args);
+        }
     }
 
     manager->error_count++;
 
-    // Also print to stderr
-    fprintf(stderr, "[ERROR] %s\n", ctx->message);
+    // Also print to stderr (handle NULL message)
+    fprintf(stderr, "[ERROR] %s\n", ctx->message ? ctx->message : "(out of memory)");
 
     pthread_mutex_unlock(&manager->mutex);
 }

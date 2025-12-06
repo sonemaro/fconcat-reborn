@@ -269,8 +269,9 @@ static int traverse_directory_internal(FconcatContext *ctx, const char *base_pat
             continue;
         }
 
-        // Update context for current file
+        // Update context for current file (safe: file_info is only used synchronously in this iteration)
         ctx->current_file_path = entry_rel_path;
+        // cppcheck-suppress autoVariables
         ctx->current_file_info = &file_info;
         ctx->current_directory_level = level;
 
@@ -284,6 +285,10 @@ static int traverse_directory_internal(FconcatContext *ctx, const char *base_pat
 
         // Call the callback
         int callback_result = callback->handle_entry(ctx, entry_rel_path, entry_type, &file_info, level, callback->user_data);
+        
+        // Clear file info pointer after callback (defensive: prevents stale pointer access)
+        ctx->current_file_info = NULL;
+        
         if (callback_result != 0)
         {
             result = callback_result;
