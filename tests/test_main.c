@@ -15,6 +15,7 @@
 extern int test_memory_main(void);
 extern int test_filter_main(void);
 extern int test_config_main(void);
+extern int test_traversal_main(void);
 
 static int run_unit_tests(void)
 {
@@ -41,14 +42,17 @@ static int run_unit_tests(void)
 
 static int run_integration_tests(void)
 {
+    int failed = 0;
+    
     fprintf(stderr, "\n========================================\n");
     fprintf(stderr, "     INTEGRATION TESTS\n");
     fprintf(stderr, "========================================\n");
     
-    /* Integration tests will be added here */
-    fprintf(stderr, "\n(No integration tests yet)\n");
+    /* Traversal integration tests */
+    fprintf(stderr, "\n>>> Running traversal tests...\n");
+    failed += test_traversal_main();
     
-    return 0;
+    return failed;
 }
 
 int main(int argc, char **argv)

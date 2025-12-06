@@ -1083,7 +1083,7 @@ bool context_file_exists(FconcatContext *ctx, const char *path)
         return false;
 
     struct stat st;
-    return stat(path, &st) == 0;
+    return lstat(path, &st) == 0;  // lstat to not follow symlinks
 }
 
 int context_get_file_info(FconcatContext *ctx, const char *path, void *info)
@@ -1094,7 +1094,8 @@ int context_get_file_info(FconcatContext *ctx, const char *path, void *info)
 
     FileInfo *file_info = (FileInfo *)info;
     struct stat st;
-    if (stat(path, &st) != 0)
+    // Use lstat to detect symlinks - stat() follows them and can't detect them
+    if (lstat(path, &st) != 0)
     {
         return -1;
     }
