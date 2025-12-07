@@ -9,9 +9,8 @@
 #ifndef FNM_CASEFOLD
 #define FNM_CASEFOLD 0
 #define NEED_MANUAL_CASEFOLD 1
-#endif
 
-// Helper function for case-insensitive string conversion
+// Helper function for case-insensitive string conversion (only needed without FNM_CASEFOLD)
 static char *str_to_lower(const char *str)
 {
     if (!str)
@@ -25,6 +24,7 @@ static char *str_to_lower(const char *str)
     }
     return lower;
 }
+#endif
 
 // pattern matching with better wildcard support
 static int match_pattern_enhanced(const char *pattern, const char *string)

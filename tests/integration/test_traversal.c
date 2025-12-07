@@ -28,9 +28,12 @@
  * The test_root path is always short (/tmp/fconcat_integ_XXXXX, ~30 chars)
  * so the 512-byte buffers are more than sufficient. The compiler cannot
  * statically prove this, so we suppress the false positive warnings.
+ * Note: -Wformat-truncation is GCC-specific, Clang doesn't recognize it.
  */
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wformat-truncation"
+#endif
 
 /* Use smaller buffers for paths - test_root is short (/tmp/fconcat_XXXXX) */
 #define TEST_PATH_MAX 512
@@ -647,4 +650,6 @@ int test_traversal_main(void)
     return TEST_EXIT_CODE();
 }
 
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop
+#endif
