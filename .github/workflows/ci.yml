@@ -1,0 +1,79 @@
+# Continuous Integration workflow
+# Runs on every push and pull request to validate builds and tests
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ==========================================================================
+  # Linux Build & Test
+  # ==========================================================================
+  linux:
+    name: Linux (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build
+        run: |
+          make clean
+          make
+
+      - name: Run tests
+        run: make test
+
+      - name: Build release variant
+        run: |
+          make clean
+          make release SECURITY=0
+
+  # ==========================================================================
+  # macOS Build & Test
+  # ==========================================================================
+  macos:
+    name: macOS (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: macos-13
+          - arch: arm64
+            runner: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build
+        run: |
+          make clean
+          make
+
+      - name: Run tests
+        run: make test
+
+      - name: Build release variant
+        run: |
+          make clean
+          make release SECURITY=0

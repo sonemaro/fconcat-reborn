@@ -13,7 +13,8 @@ STRIP ?= strip
 # Enhanced compiler flags for security and modern C11 features
 CFLAGS = -Wall -Wextra -Werror -std=c11 -O2 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L
 SECURITY_CFLAGS = -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE
-LDFLAGS = -pthread -pie
+# Base LDFLAGS - platform-specific flags added later
+LDFLAGS = -pthread
 LIBS = -lm -ldl
 
 # Version and build info
@@ -79,10 +80,16 @@ ifeq ($(OS),Windows_NT)
     RM = del /Q
     MKDIR = mkdir
     PATH_SEP = \\
+    IS_MACOS = 0
 else
     UNAME_S := $(shell uname -s)
     ifeq ($(UNAME_S),Linux)
         LIBS += -lrt
+        IS_MACOS = 0
+    else ifeq ($(UNAME_S),Darwin)
+        IS_MACOS = 1
+    else
+        IS_MACOS = 0
     endif
     EXE_SUFFIX = 
     PLUGIN_SUFFIX = .so
@@ -190,7 +197,10 @@ endif
 
 ifeq ($(SECURITY),1)
     CFLAGS += $(SECURITY_CFLAGS)
-    LDFLAGS += -Wl,-z,relro,-z,now
+    # Linux-specific linker hardening flags (not supported on macOS)
+    ifeq ($(IS_MACOS),0)
+        LDFLAGS += -pie -Wl,-z,relro,-z,now
+    endif
 endif
 
 # Link-time optimization
@@ -324,21 +334,31 @@ bench-report: benchmark
 # ENHANCED BUILD VARIANTS
 # ============================================================================
 
+# macOS minimum version for release builds (ensures 5-year compatibility)
+MACOS_MIN_VERSION ?= 12.0
+
 # Release build with maximum optimization
-release: CFLAGS = -Wall -Wextra -Werror -std=c11 -O3 -DNDEBUG -flto -ffast-math -DWITH_PLUGINS
-release: LDFLAGS += -flto -s
-release: 
+# IMPORTANT: No -march=native for portability across different CPUs
+release:
 	@echo "🚀 Building optimized release..."
-	$(eval CFLAGS += $(if $(findstring aarch64,$(CC)),-march=armv8-a,-march=native))
-	$(MAKE) $(TARGET)
+	$(MAKE) clean
+ifeq ($(UNAME_S),Darwin)
+	$(MAKE) CFLAGS="-Wall -Wextra -Werror -std=c11 -O3 -DNDEBUG -flto -ffast-math -DWITH_PLUGINS -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -mmacosx-version-min=$(MACOS_MIN_VERSION)" LDFLAGS="-pthread -flto" LIBS="-lm -ldl" $(TARGET)
+else
+	$(MAKE) CFLAGS="-Wall -Wextra -Werror -std=c11 -O3 -DNDEBUG -flto -ffast-math -DWITH_PLUGINS -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L" LDFLAGS="-pthread -flto -pie -Wl,-z,relro,-z,now" LIBS="-lm -ldl -lrt" $(TARGET)
+endif
+	@echo "✅ Release build complete"
 
 # Debug build with comprehensive debugging
-debug: CFLAGS = -Wall -Wextra -std=c11 -g3 -O0 -DDEBUG -DFCONCAT_DEBUG -DWITH_PLUGINS
-debug: LDFLAGS = -pthread -g
-debug: 
+debug:
 	@echo "🐛 Building debug version..."
-	$(eval CFLAGS += $(if $(findstring aarch64,$(CC)),-march=armv8-a,-march=native))
-	$(MAKE) $(TARGET)
+	$(MAKE) clean
+ifeq ($(UNAME_S),Darwin)
+	$(MAKE) CFLAGS="-Wall -Wextra -std=c11 -g3 -O0 -DDEBUG -DFCONCAT_DEBUG -DWITH_PLUGINS -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L" LDFLAGS="-pthread -g" LIBS="-lm -ldl" $(TARGET)
+else
+	$(MAKE) CFLAGS="-Wall -Wextra -std=c11 -g3 -O0 -DDEBUG -DFCONCAT_DEBUG -DWITH_PLUGINS -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L" LDFLAGS="-pthread -g" LIBS="-lm -ldl -lrt" $(TARGET)
+endif
+	@echo "✅ Debug build complete"
 
 # Debug with plugin support
 debug-plugins: debug plugins

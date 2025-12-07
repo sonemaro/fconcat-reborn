@@ -1,0 +1,169 @@
+# Release workflow
+# Triggered on version tags (v*.*.*)
+# Builds binaries for all platforms and creates a GitHub release
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+jobs:
+  # ==========================================================================
+  # Linux Builds
+  # ==========================================================================
+  build-linux:
+    name: Build Linux (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build release
+        run: |
+          make clean
+          make release SECURITY=0
+          strip fconcat
+
+      - name: Run tests
+        run: |
+          make clean
+          make
+          make test
+
+      - name: Rename binary
+        run: mv fconcat fconcat-linux-${{ matrix.arch }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fconcat-linux-${{ matrix.arch }}
+          path: fconcat-linux-${{ matrix.arch }}
+          retention-days: 1
+
+  # ==========================================================================
+  # macOS Builds
+  # ==========================================================================
+  build-macos:
+    name: Build macOS (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: macos-13
+          - arch: arm64
+            runner: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build release
+        run: |
+          make clean
+          make release SECURITY=0 MACOS_MIN_VERSION=12.0
+          strip fconcat
+
+      - name: Run tests
+        run: |
+          make clean
+          make
+          make test
+
+      - name: Rename binary
+        run: mv fconcat fconcat-macos-${{ matrix.arch }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fconcat-macos-${{ matrix.arch }}
+          path: fconcat-macos-${{ matrix.arch }}
+          retention-days: 1
+
+  # ==========================================================================
+  # Create Release
+  # ==========================================================================
+  create-release:
+    name: Create Release
+    needs: [build-linux, build-macos]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la artifacts/
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum fconcat-* > sha256sum.txt
+          cat sha256sum.txt
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          
+          # Create release notes
+          cat << 'EOF' > release_notes.md
+          ## Installation
+          
+          **One-liner install (Linux/macOS):**
+          ```bash
+          curl -fsSL https://raw.githubusercontent.com/sonemaro/fconcat-reborn/main/.github/scripts/install.sh | sh
+          ```
+          
+          **Manual download:**
+          
+          | Platform | Architecture | Binary |
+          |----------|--------------|--------|
+          | Linux | x86_64 | `fconcat-linux-amd64` |
+          | Linux | ARM64 | `fconcat-linux-arm64` |
+          | macOS | Intel | `fconcat-macos-amd64` |
+          | macOS | Apple Silicon | `fconcat-macos-arm64` |
+          
+          ### Checksums (SHA256)
+          ```
+          EOF
+          
+          cat artifacts/sha256sum.txt >> release_notes.md
+          
+          cat << 'EOF' >> release_notes.md
+          ```
+          
+          ### Plugin Support
+          All binaries support dynamic plugin loading. See the [Plugin System](https://github.com/sonemaro/fconcat-reborn#plugin-system) documentation.
+          EOF
+          
+          gh release create "$VERSION" \
+            --title "fconcat $VERSION" \
+            --notes-file release_notes.md \
+            artifacts/*

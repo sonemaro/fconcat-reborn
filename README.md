@@ -9,78 +9,103 @@ fconcat recursively traverses directories and concatenates file contents
 with structural headers, making it ideal for code review, documentation,
 LLM context preparation, or archival purposes.
 
-Building
---------
+Installation
+------------
+
+### Quick Install (Recommended)
+
+**Linux & macOS:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sonemaro/fconcat-reborn/main/.github/scripts/install.sh | sh
+```
+
+**Install a specific version:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sonemaro/fconcat-reborn/main/.github/scripts/install.sh | FCONCAT_VERSION=v1.0.0 sh
+```
+
+**Install to custom directory:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sonemaro/fconcat-reborn/main/.github/scripts/install.sh | FCONCAT_INSTALL_DIR=~/.local/bin sh
+```
+
+### Manual Download
+
+Download the binary for your platform from [Releases](https://github.com/sonemaro/fconcat-reborn/releases):
+
+| Platform | Architecture | Binary |
+|----------|--------------|--------|
+| Linux | x86_64 | `fconcat-linux-amd64` |
+| Linux | ARM64 | `fconcat-linux-arm64` |
+| macOS | Intel | `fconcat-macos-amd64` |
+| macOS | Apple Silicon | `fconcat-macos-arm64` |
+
+Then:
+
+```bash
+chmod +x fconcat-*
+sudo mv fconcat-* /usr/local/bin/fconcat
+```
+
+### Build from Source
 
 Requirements:
 - GCC or Clang with C11 support
 - GNU Make
-- pthreads
-- Linux/Unix or Windows (via MinGW cross-compilation)
 
-Quick start:
-
-    make
-    ./fconcat ./src output.txt
-
-For a debug build:
-
-    make debug
-
-For release with link-time optimization:
-
-    make release LTO=1
-
-Cross-compile for Windows:
-
-    make windows64
-
-Installation
-------------
-
-    make install PREFIX=/usr/local
-
-Or just copy the binary somewhere in your PATH:
-
-    cp fconcat /usr/local/bin/
+```bash
+git clone https://github.com/sonemaro/fconcat-reborn.git
+cd fconcat-reborn
+make release
+sudo make install
+```
 
 Usage
 -----
 
-    fconcat <input_directory> <output_file> [options]
+```
+fconcat <input_directory> <output_file> [options]
+```
 
-Basic examples:
+### Basic Examples
 
-    # Concatenate all files in src/ to output.txt
-    fconcat ./src output.txt
+```bash
+# Concatenate all files in src/ to output.txt
+fconcat ./src output.txt
 
-    # Include only C source files
-    fconcat ./project result.txt --include "*.c" "*.h"
+# Include only C source files
+fconcat ./project result.txt --include "*.c" "*.h"
 
-    # Exclude build artifacts and tests
-    fconcat ./kernel out.txt --exclude "*.o" "build/*" "test*"
+# Exclude build artifacts and tests
+fconcat ./kernel out.txt --exclude "*.o" "build/*" "test*"
 
-    # JSON output with file sizes
-    fconcat ./code result.json --format json --show-size
+# JSON output with file sizes
+fconcat ./code result.json --format json --show-size
 
-    # Combine include and exclude for fine-grained control
-    fconcat ./src out.txt --include "*.py" --exclude "__pycache__/*"
+# Combine include and exclude for fine-grained control
+fconcat ./src out.txt --include "*.py" --exclude "__pycache__/*"
+```
 
 Options
 -------
 
-    --include <patterns>    Include only files matching patterns
-    --exclude <patterns>    Exclude files matching patterns
-    --show-size, -s         Display file sizes in output
-    --verbose, -v           Enable debug logging
-    --log-level <level>     Set log level: error, warning, info, debug, trace
-    --format <format>       Output format: text (default), json
-    --binary-skip           Skip binary files (default)
-    --binary-include        Include binary file contents
-    --binary-placeholder    Show placeholder for binary files
-    --symlinks <mode>       Symlink handling: skip, follow, include, placeholder
-    --plugin <spec>         Load plugin with optional params (path:key=val,...)
-    --interactive           Keep plugins active after processing
+```
+--include <patterns>    Include only files matching patterns
+--exclude <patterns>    Exclude files matching patterns
+--show-size, -s         Display file sizes in output
+--verbose, -v           Enable debug logging
+--log-level <level>     Set log level: error, warning, info, debug, trace
+--format <format>       Output format: text (default), json
+--binary-skip           Skip binary files (default)
+--binary-include        Include binary file contents
+--binary-placeholder    Show placeholder for binary files
+--symlinks <mode>       Symlink handling: skip, follow, include, placeholder
+--plugin <spec>         Load plugin with optional params (path:key=val,...)
+--interactive           Keep plugins active after processing
+```
 
 Pattern Matching
 ----------------
@@ -92,31 +117,61 @@ Patterns support wildcards:
 Patterns match against both full paths and basenames. Multiple patterns
 can be specified:
 
-    fconcat ./src out.txt --include "*.c" "*.h" "Makefile"
-    fconcat ./proj out.txt --exclude "*.log" "*.tmp" "cache/*"
+```bash
+fconcat ./src out.txt --include "*.c" "*.h" "Makefile"
+fconcat ./proj out.txt --exclude "*.log" "*.tmp" "cache/*"
+```
 
 Output Formats
 --------------
 
 **Text format** (default):
 
-    ================================================================================
-    File: src/main.c
-    ================================================================================
-    #include <stdio.h>
-    ...
+```
+================================================================================
+File: src/main.c
+================================================================================
+#include <stdio.h>
+...
+```
 
 **JSON format**:
 
+```json
+{
+  "files": [
     {
-      "files": [
-        {
-          "path": "src/main.c",
-          "size": 4096,
-          "content": "..."
-        }
-      ]
+      "path": "src/main.c",
+      "size": 4096,
+      "content": "..."
     }
+  ]
+}
+```
+
+Plugin System
+-------------
+
+fconcat supports loadable plugins for custom processing. Plugins are
+shared libraries that implement the plugin API:
+
+```c
+PLUGIN_EXPORT int plugin_init(FconcatContext *ctx);
+PLUGIN_EXPORT void plugin_destroy(FconcatContext *ctx);
+PLUGIN_EXPORT int plugin_process_file(FconcatContext *ctx,
+                                      const char *path,
+                                      const char *content,
+                                      size_t size);
+```
+
+Load a plugin:
+
+```bash
+fconcat ./src out.txt --plugin ./myplugin.so
+fconcat ./src out.txt --plugin ./myplugin.so:debug=1,threshold=100
+```
+
+**Note:** All release binaries are dynamically linked to support plugin loading.
 
 Signal Handling
 ---------------
@@ -133,27 +188,29 @@ Architecture
 
 The codebase is organized into subsystems:
 
-    src/
-    ├── main.c           # Entry point, CLI parsing
-    ├── fconcat.h        # Main header
-    ├── core/
-    │   ├── context.c    # Processing context, directory traversal
-    │   ├── memory.c     # Memory management with tracking
-    │   ├── error.c      # Error handling
-    │   └── types.h      # Core type definitions
-    ├── config/
-    │   └── config.c     # Configuration parsing
-    ├── filter/
-    │   ├── filter.c         # Filter engine
-    │   ├── filter_binary.c  # Binary file detection
-    │   ├── filter_exclude.c # Exclusion patterns
-    │   ├── filter_include.c # Inclusion patterns
-    │   └── filter_symlink.c # Symlink handling
-    ├── format/
-    │   ├── format.c     # Format engine
-    │   └── format_text.c # Text output formatter
-    └── plugins/
-        └── plugin.c     # Plugin system
+```
+src/
+├── main.c           # Entry point, CLI parsing
+├── fconcat.h        # Main header
+├── core/
+│   ├── context.c    # Processing context, directory traversal
+│   ├── memory.c     # Memory management with tracking
+│   ├── error.c      # Error handling
+│   └── types.h      # Core type definitions
+├── config/
+│   └── config.c     # Configuration parsing
+├── filter/
+│   ├── filter.c         # Filter engine
+│   ├── filter_binary.c  # Binary file detection
+│   ├── filter_exclude.c # Exclusion patterns
+│   ├── filter_include.c # Inclusion patterns
+│   └── filter_symlink.c # Symlink handling
+├── format/
+│   ├── format.c     # Format engine
+│   └── format_text.c # Text output formatter
+└── plugins/
+    └── plugin.c     # Plugin system
+```
 
 Safety Features
 ---------------
@@ -174,89 +231,38 @@ pair to prevent infinite loops from symlink cycles or bind mounts.
 **Compile-time hardening**: Built with stack protector, FORTIFY_SOURCE,
 position-independent code, and full RELRO.
 
-Testing
--------
+Development
+-----------
 
-Run the test suite:
+### Building
 
-    make test
+```bash
+make              # Standard build
+make debug        # Debug build with symbols
+make release      # Optimized release build
+make test         # Run all tests
+make sanitize     # Build with AddressSanitizer
+```
 
-Run only unit tests:
+### Testing
 
-    make test-unit
-
-Run only integration tests:
-
-    make test-integration
-
-Generate coverage report (requires lcov):
-
-    make coverage
+```bash
+make test              # Run all tests
+make test-unit         # Run only unit tests
+make test-integration  # Run only integration tests
+make coverage          # Generate coverage report (requires lcov)
+```
 
 The test suite includes 81 tests covering memory management, filters,
 configuration parsing, and directory traversal.
 
-Sanitizers
-----------
+### Sanitizers
 
-Build with AddressSanitizer:
-
-    make sanitize
-
-Build with MemorySanitizer (requires clang):
-
-    make msan
-
-Build with ThreadSanitizer:
-
-    make tsan
-
-Plugin System
--------------
-
-fconcat supports loadable plugins for custom processing. Plugins are
-shared libraries that implement the plugin API:
-
-    PLUGIN_EXPORT int plugin_init(FconcatContext *ctx);
-    PLUGIN_EXPORT void plugin_destroy(FconcatContext *ctx);
-    PLUGIN_EXPORT int plugin_process_file(FconcatContext *ctx,
-                                          const char *path,
-                                          const char *content,
-                                          size_t size);
-
-Load a plugin:
-
-    fconcat ./src out.txt --plugin ./myplugin.so
-    fconcat ./src out.txt --plugin ./myplugin.so:debug=1,threshold=100
-
-Docker Build
-------------
-
-Build a portable binary with older glibc for maximum compatibility:
-
-    ./build-docker.sh
-
-This produces a statically linked binary that runs on most Linux systems.
-
-Benchmarking
-------------
-
-Run benchmarks:
-
-    make benchmark
-
-Generate benchmark report:
-
-    make bench-report
-
-Files
------
-
-- `fconcat` - Main binary
-- `test_fconcat` - Test executable (not tracked in git)
-- `coverage_html/` - Coverage report (generated)
-- `Makefile` - Build system
-- `Dockerfile` - Portable build environment
+```bash
+make sanitize    # AddressSanitizer + UBSan
+make msan        # MemorySanitizer (requires clang)
+make tsan        # ThreadSanitizer
+```
 
 Contributing
 ------------
@@ -293,3 +299,4 @@ Links
 
 - Repository: https://github.com/sonemaro/fconcat-reborn
 - Issues: https://github.com/sonemaro/fconcat-reborn/issues
+- Releases: https://github.com/sonemaro/fconcat-reborn/releases
