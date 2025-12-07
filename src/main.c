@@ -63,7 +63,7 @@ static int is_shutdown_requested(void)
 
 void print_header()
 {
-    printf("fconcat v%s - Next-generation file concatenator\n", FCONCAT_VERSION);
+    printf("fconcat %s - Next-generation file concatenator\n", FCONCAT_VERSION);
     printf("%s\n", FCONCAT_COPYRIGHT);
     printf("==================================================================\n\n");
 }
@@ -234,6 +234,22 @@ int main(int argc, char *argv[])
 {
     struct timespec start_time, end_time;
     clock_gettime(CLOCK_MONOTONIC, &start_time);
+
+    // Handle --help and --version before anything else
+    if (argc == 2)
+    {
+        if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0)
+        {
+            print_header();
+            print_usage(argv[0]);
+            return EXIT_SUCCESS;
+        }
+        if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)
+        {
+            printf("fconcat %s\n", FCONCAT_VERSION);
+            return EXIT_SUCCESS;
+        }
+    }
 
     print_header();
 

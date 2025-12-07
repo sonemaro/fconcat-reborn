@@ -551,8 +551,8 @@ TEST(integ_help_option)
     char output[8192];
     int exit_code = run_fconcat(output, sizeof(output), "--help");
     
-    /* --help prints usage and returns 1 (as per main.c) */
-    ASSERT_EQ(1, exit_code);
+    /* --help prints usage and returns 0 (success) */
+    ASSERT_EQ(0, exit_code);
     ASSERT_TRUE(output_contains(output, "Usage") || output_contains(output, "usage"));
     
     return 0;
@@ -563,8 +563,8 @@ TEST(integ_version_option)
     char output[8192];
     int exit_code = run_fconcat(output, sizeof(output), "--version");
     
-    /* --version prints version and returns 1 (as per main.c) */
-    ASSERT_EQ(1, exit_code);
+    /* --version prints version and returns 0 (success) */
+    ASSERT_EQ(0, exit_code);
     /* Should display some version info */
     ASSERT_TRUE(strlen(output) > 0);
     
