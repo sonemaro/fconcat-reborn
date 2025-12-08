@@ -7,19 +7,20 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <time.h>
+#include <pthread.h>
 
 // Allocation header for accurate memory tracking
 // Magic values are randomized at startup to prevent predictable exploitation
 static uint32_t g_memory_magic = 0;
 static uint32_t g_memory_freed_magic = 0;
 static uint32_t g_memory_canary = 0;  // Tail canary for buffer overflow detection
-static int g_magic_initialized = 0;
 
-// Initialize magic values with random data (called once)
-static void init_memory_magic(void)
+// Thread-safe one-time initialization using pthread_once
+static pthread_once_t g_magic_init_once = PTHREAD_ONCE_INIT;
+
+// Internal initialization function (called exactly once)
+static void init_memory_magic_impl(void)
 {
-    if (g_magic_initialized) return;
-    
     // Try /dev/urandom first (cryptographically secure)
     int fd = open("/dev/urandom", O_RDONLY);
     if (fd >= 0) {
@@ -37,7 +38,6 @@ static void init_memory_magic(void)
             if (g_memory_magic == g_memory_freed_magic) g_memory_freed_magic ^= 0x12345678;
             if (g_memory_canary == g_memory_magic) g_memory_canary ^= 0x87654321;
             if (g_memory_canary == g_memory_freed_magic) g_memory_canary ^= 0xABCDEF00;
-            g_magic_initialized = 1;
             return;
         }
     }
@@ -55,8 +55,12 @@ static void init_memory_magic(void)
     if (g_memory_magic == g_memory_freed_magic) g_memory_freed_magic ^= 0x12345678;
     if (g_memory_canary == g_memory_magic) g_memory_canary ^= 0x87654321;
     if (g_memory_canary == g_memory_freed_magic) g_memory_canary ^= 0xABCDEF00;
-    
-    g_magic_initialized = 1;
+}
+
+// Thread-safe initialization wrapper - uses pthread_once for safety
+static void init_memory_magic(void)
+{
+    pthread_once(&g_magic_init_once, init_memory_magic_impl);
 }
 
 typedef struct {

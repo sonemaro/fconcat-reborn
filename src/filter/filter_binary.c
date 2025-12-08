@@ -1,4 +1,5 @@
 #include "filter.h"
+#include "../core/types.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -16,8 +17,9 @@ static int binary_match_content(const char *path, const char *content, size_t si
 
     (void)path; // Mark as intentionally unused
 
-    // Simple binary detection - look for null bytes
-    for (size_t i = 0; i < size && i < 1024; i++)
+    // Simple binary detection - look for null bytes in first BINARY_DETECTION_SAMPLE_SIZE bytes
+    size_t check_size = (size < BINARY_DETECTION_SAMPLE_SIZE) ? size : BINARY_DETECTION_SAMPLE_SIZE;
+    for (size_t i = 0; i < check_size; i++)
     {
         if (content[i] == '\0')
         {

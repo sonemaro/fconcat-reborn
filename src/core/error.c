@@ -42,7 +42,7 @@ void error_manager_destroy(ErrorManager *manager)
 
 void error_report_context(ErrorManager *manager, FconcatErrorCode code, const char *file, int line, const char *function, const char *format, ...)
 {
-    if (!manager || manager->error_count >= 1000)
+    if (!manager || manager->error_count >= MAX_ERRORS)
         return;
 
     pthread_mutex_lock(&manager->mutex);
@@ -89,7 +89,7 @@ void error_report_context(ErrorManager *manager, FconcatErrorCode code, const ch
 
 void error_report(ErrorManager *manager, FconcatErrorCode code, const char *format, ...)
 {
-    if (!manager || manager->error_count >= 1000)
+    if (!manager || manager->error_count >= MAX_ERRORS)
         return;
 
     pthread_mutex_lock(&manager->mutex);

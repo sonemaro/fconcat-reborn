@@ -87,6 +87,13 @@ void plugin_manager_destroy(PluginManager *manager, FconcatContext *ctx)
             dlclose(meta->handle);
         }
 
+        // Free plugin parameters
+        for (int j = 0; j < meta->parameter_count; j++)
+        {
+            free(meta->parameters[j]);
+        }
+        free(meta->parameters);
+
         free(meta->plugin_data);
     }
 
@@ -180,13 +187,23 @@ int plugin_manager_load_plugin(PluginManager *manager, const char *path, char **
                     {
                         meta->parameters[i] = strdup(parameters[i] ? parameters[i] : "");
                         if (!meta->parameters[i]) {
+                            // Cleanup on strdup failure
                             for (int j = 0; j < i; j++) free(meta->parameters[j]);
                             free(meta->parameters);
-                            meta->parameters = NULL;
-                            meta->parameter_count = 0;
-                            break;
+                            free(meta->plugin_data);
+                            pthread_mutex_unlock(&manager->registry.mutex);
+                            dlclose(handle);
+                            return -1;
                         }
                     }
+                }
+                else
+                {
+                    // Cleanup on malloc failure
+                    free(meta->plugin_data);
+                    pthread_mutex_unlock(&manager->registry.mutex);
+                    dlclose(handle);
+                    return -1;
                 }
             }
 
@@ -257,13 +274,23 @@ int plugin_manager_load_plugin(PluginManager *manager, const char *path, char **
                     {
                         meta->parameters[i] = strdup(parameters[i] ? parameters[i] : "");
                         if (!meta->parameters[i]) {
+                            // Cleanup on strdup failure
                             for (int j = 0; j < i; j++) free(meta->parameters[j]);
                             free(meta->parameters);
-                            meta->parameters = NULL;
-                            meta->parameter_count = 0;
-                            break;
+                            free(meta->plugin_data);
+                            pthread_mutex_unlock(&manager->registry.mutex);
+                            dlclose(handle);
+                            return -1;
                         }
                     }
+                }
+                else
+                {
+                    // Cleanup on malloc failure
+                    free(meta->plugin_data);
+                    pthread_mutex_unlock(&manager->registry.mutex);
+                    dlclose(handle);
+                    return -1;
                 }
             }
 
@@ -330,13 +357,23 @@ int plugin_manager_load_plugin(PluginManager *manager, const char *path, char **
                     {
                         meta->parameters[i] = strdup(parameters[i] ? parameters[i] : "");
                         if (!meta->parameters[i]) {
+                            // Cleanup on strdup failure
                             for (int j = 0; j < i; j++) free(meta->parameters[j]);
                             free(meta->parameters);
-                            meta->parameters = NULL;
-                            meta->parameter_count = 0;
-                            break;
+                            free(meta->plugin_data);
+                            pthread_mutex_unlock(&manager->registry.mutex);
+                            dlclose(handle);
+                            return -1;
                         }
                     }
+                }
+                else
+                {
+                    // Cleanup on malloc failure
+                    free(meta->plugin_data);
+                    pthread_mutex_unlock(&manager->registry.mutex);
+                    dlclose(handle);
+                    return -1;
                 }
             }
 

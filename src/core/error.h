@@ -19,7 +19,7 @@ typedef struct {
 
 // Error manager
 typedef struct {
-    ErrorContext errors[1000];
+    ErrorContext errors[MAX_ERRORS];
     int error_count;
     int warning_count;
     pthread_mutex_t mutex;

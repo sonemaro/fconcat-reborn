@@ -69,9 +69,18 @@ extern "C"
         void (*warning)(FconcatContext *ctx, const char *format, ...);
         int (*get_error_count)(FconcatContext *ctx);
 
-        // Current processing state
+        /**
+         * Current processing state
+         * 
+         * WARNING: These pointers are only valid during callback execution.
+         * - current_file_path points to a stack-allocated buffer
+         * - current_file_info points to a stack-allocated FileInfo struct
+         * 
+         * Do NOT store these pointers for later use. If you need the values
+         * after the callback returns, make a copy using strdup() or memcpy().
+         */
         const char *current_file_path;
-        const void *current_file_info; // Opaque pointer
+        const void *current_file_info; // Opaque pointer to FileInfo, valid only during callback
         size_t current_file_processed_bytes;
         int current_directory_level;
 

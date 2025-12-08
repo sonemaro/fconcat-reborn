@@ -1,82 +1,9 @@
 #include "filter.h"
+#include "filter_utils.h"
 #include <stdlib.h>
 #include <string.h>
 #include <fnmatch.h>
 #include <stdio.h>
-#include <ctype.h>
-
-// FNM_CASEFOLD is a GNU extension, not available on macOS
-#ifndef FNM_CASEFOLD
-#define FNM_CASEFOLD 0
-#define NEED_MANUAL_CASEFOLD 1
-
-// Helper function for case-insensitive string conversion (only needed without FNM_CASEFOLD)
-static char *str_to_lower_include(const char *str)
-{
-    if (!str)
-        return NULL;
-    size_t len = strlen(str);
-    char *lower = malloc(len + 1);
-    if (!lower)
-        return NULL;
-    for (size_t i = 0; i <= len; i++) {
-        lower[i] = tolower((unsigned char)str[i]);
-    }
-    return lower;
-}
-#endif
-
-// Enhanced pattern matching - FIXED for simple patterns like *.tsx
-static int match_pattern_enhanced(const char *pattern, const char *string)
-{
-    if (!pattern || !string)
-        return 0;
-
-    // Handle empty pattern
-    if (strlen(pattern) == 0)
-        return 0;
-
-    // For simple patterns like "*.tsx", don't use FNM_PATHNAME
-    // FNM_PATHNAME treats '/' specially which breaks simple wildcard matching
-    if (fnmatch(pattern, string, 0) == 0)
-        return 1;
-
-    // Also try case-insensitive matching
-#ifdef NEED_MANUAL_CASEFOLD
-    // Manual case-insensitive matching for non-GNU systems (e.g., macOS)
-    char *lower_pattern = str_to_lower_include(pattern);
-    char *lower_string = str_to_lower_include(string);
-    int result = 0;
-    if (lower_pattern && lower_string) {
-        result = (fnmatch(lower_pattern, lower_string, 0) == 0);
-    }
-    free(lower_pattern);
-    free(lower_string);
-    if (result)
-        return 1;
-#else
-    if (fnmatch(pattern, string, FNM_CASEFOLD) == 0)
-        return 1;
-#endif
-
-    return 0;
-}
-
-// Get basename from path (handles both / and \ separators)
-static const char *get_basename_include(const char *path)
-{
-    if (!path)
-        return NULL;
-
-    const char *basename = strrchr(path, '/');
-    const char *basename_win = strrchr(path, '\\');
-
-    // Use whichever separator was found last
-    if (basename_win > basename)
-        basename = basename_win;
-
-    return basename ? basename + 1 : path;
-}
 
 // Check if path matches any include pattern
 int include_match_path(const char *path, FileInfo *info, void *context)
@@ -85,7 +12,7 @@ int include_match_path(const char *path, FileInfo *info, void *context)
     if (!ctx || !path)
         return 0;
 
-    const char *basename = get_basename_include(path);
+    const char *basename = filter_get_basename(path);
     if (!basename)
         return 0;
 
@@ -114,13 +41,13 @@ int include_match_path(const char *path, FileInfo *info, void *context)
             continue;
 
         // Check against basename first (most common case)
-        if (match_pattern_enhanced(ctx->patterns[i], basename))
+        if (filter_match_pattern(ctx->patterns[i], basename))
         {
             return 1; // Match - should include
         }
 
         // Check against full path
-        if (match_pattern_enhanced(ctx->patterns[i], path))
+        if (filter_match_pattern(ctx->patterns[i], path))
         {
             return 1; // Match - should include
         }
@@ -128,7 +55,7 @@ int include_match_path(const char *path, FileInfo *info, void *context)
         // For path-based patterns, also try with src/ prefix removed
         if (strncmp(path, "src/", 4) == 0)
         {
-            if (match_pattern_enhanced(ctx->patterns[i], path + 4))
+            if (filter_match_pattern(ctx->patterns[i], path + 4))
             {
                 return 1;
             }
@@ -157,12 +84,12 @@ static IncludeContext *create_include_context(const ResolvedConfig *config)
 
     ctx->pattern_count = config->include_count;
 
-    // Copy patterns and normalize them
+    // Copy patterns and normalize them using utility function
     for (int i = 0; i < config->include_count; i++)
     {
         if (config->include_patterns[i])
         {
-            ctx->patterns[i] = strdup(config->include_patterns[i]);
+            ctx->patterns[i] = filter_normalize_pattern(config->include_patterns[i]);
             if (!ctx->patterns[i])
             {
                 // Cleanup on failure
@@ -174,35 +101,6 @@ static IncludeContext *create_include_context(const ResolvedConfig *config)
                 free(ctx);
                 return NULL;
             }
-
-            // Normalize pattern (remove leading/trailing whitespace)
-            char *pattern = ctx->patterns[i];
-            size_t len = strlen(pattern);
-
-            // Remove trailing whitespace
-            while (len > 0 && (pattern[len - 1] == ' ' || pattern[len - 1] == '\t'))
-            {
-                pattern[len - 1] = '\0';
-                len--;
-            }
-
-            // Skip leading whitespace
-            while (*pattern == ' ' || *pattern == '\t')
-            {
-                pattern++;
-            }
-
-            // Update pattern if it changed
-            if (pattern != ctx->patterns[i])
-            {
-                char *new_pattern = strdup(pattern);
-                if (new_pattern)
-                {
-                    free(ctx->patterns[i]);
-                    ctx->patterns[i] = new_pattern;
-                }
-            }
-
         }
         else
         {

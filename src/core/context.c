@@ -1169,6 +1169,18 @@ bool context_file_exists(FconcatContext *ctx, const char *path)
     return lstat(path, &st) == 0;  // lstat to not follow symlinks
 }
 
+/**
+ * @brief Get file information for a path
+ * 
+ * @param ctx The context (unused but required for API consistency)
+ * @param path The file path to query
+ * @param info Pointer to FileInfo structure to populate
+ * @return 0 on success, -1 on failure
+ * 
+ * @note IMPORTANT: Caller takes ownership of file_info->path and must free() it.
+ *       The path field is allocated with strdup() and the caller is responsible
+ *       for freeing it when done with the FileInfo structure.
+ */
 int context_get_file_info(FconcatContext *ctx, const char *path, void *info)
 {
     (void)ctx;

@@ -19,9 +19,11 @@ extern "C"
 #define MAX_INCLUDES 1000
 #define MAX_BUFFER_SIZE 1024 * 4
 #define BINARY_CHECK_SIZE 8192
+#define BINARY_DETECTION_SAMPLE_SIZE 1024  // Bytes to sample for binary detection in content
 #define PLUGIN_CHUNK_SIZE 4096
 #define MAX_PATH 4096
 #define MAX_PLUGIN_PARAMS 16
+#define MAX_ERRORS 1000                     // Max errors to track in ErrorManager
 
 #define MAX_FILE_SIZE (1024ULL * 1024 * 1024)       // 1GB max file size
 #define MAX_STREAM_BUFFER_SIZE (256ULL * 1024 * 1024) // 256MB max buffer

@@ -40,7 +40,7 @@ EXAMPLES_DIR = examples
 CORE_SRCS = $(wildcard $(SRC_DIR)/core/*.c)
 CONFIG_SRCS = $(wildcard $(SRC_DIR)/config/*.c)
 FORMAT_SRCS = $(wildcard $(SRC_DIR)/format/*.c)
-FILTER_SRCS = $(SRC_DIR)/filter/filter.c $(SRC_DIR)/filter/filter_exclude.c $(SRC_DIR)/filter/filter_binary.c $(SRC_DIR)/filter/filter_symlink.c $(SRC_DIR)/filter/filter_include.c
+FILTER_SRCS = $(SRC_DIR)/filter/filter.c $(SRC_DIR)/filter/filter_exclude.c $(SRC_DIR)/filter/filter_binary.c $(SRC_DIR)/filter/filter_symlink.c $(SRC_DIR)/filter/filter_include.c $(SRC_DIR)/filter/filter_utils.c
 PLUGIN_SRCS = $(SRC_DIR)/plugins/plugin.c
 MAIN_SRCS = $(SRC_DIR)/main.c
 

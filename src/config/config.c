@@ -653,8 +653,8 @@ ResolvedConfig *config_resolve(ConfigManager *manager)
         free(config->output_format);
         config->output_format = strdup(format);
         if (!config->output_format) {
-            free(config);
-            return NULL;  // Allocation failed
+            pthread_mutex_unlock(&manager->mutex);
+            return NULL;  // Allocation failed - caller should use config_manager_destroy()
         }
     }
 
@@ -664,9 +664,8 @@ ResolvedConfig *config_resolve(ConfigManager *manager)
         free(config->input_directory);
         config->input_directory = strdup(input_dir);
         if (!config->input_directory) {
-            free(config->output_format);
-            free(config);
-            return NULL;  // Allocation failed
+            pthread_mutex_unlock(&manager->mutex);
+            return NULL;  // Allocation failed - caller should use config_manager_destroy()
         }
     }
 
@@ -676,10 +675,8 @@ ResolvedConfig *config_resolve(ConfigManager *manager)
         free(config->output_file);
         config->output_file = strdup(output_file);
         if (!config->output_file) {
-            free(config->output_format);
-            free(config->input_directory);
-            free(config);
-            return NULL;  // Allocation failed
+            pthread_mutex_unlock(&manager->mutex);
+            return NULL;  // Allocation failed - caller should use config_manager_destroy()
         }
     }
 
