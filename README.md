@@ -153,7 +153,16 @@ make                # Build fconcat
 make test           # Build and run the test suite
 make sanitize-test  # Run tests under ASan/UBSan plus leak guard
 make release        # Optimized build
+make bench          # Raw traversal benchmark, default BENCH_ROOT=$HOME/projects
+make bench-real     # Full output benchmark, default BENCH_ROOT=$HOME/projects
 make clean          # Remove local build outputs
+```
+
+Useful benchmark overrides:
+
+```bash
+make bench BENCH_ROOT=/path/to/tree BENCH_ITERATIONS=10
+make bench-real BENCH_ROOT=/path/to/tree BENCH_OUTPUT=/tmp/fconcat.txt
 ```
 
 The codebase is organized by subsystem:
@@ -175,6 +184,7 @@ Contributing
 - Keep output streaming; avoid whole-file buffering in normal paths.
 - Add or update tests when behavior changes.
 - Run `make test` before submitting changes.
+- Run `make sanitize-test` before release work.
 
 License
 -------

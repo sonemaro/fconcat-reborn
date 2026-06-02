@@ -1,26 +1,22 @@
-CC ?= cc
-AR ?= ar
-PREFIX ?= /usr/local
-BINDIR ?= $(PREFIX)/bin
-
 TARGET := fconcat
 TEST_TARGET := test_fconcat
 
+CC ?= cc
+PREFIX ?= /usr/local
+BINDIR ?= $(PREFIX)/bin
+
 CPPFLAGS ?= -Iinclude -Isrc -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L
 CFLAGS ?= -O2 -g
-WARNFLAGS := -Wall -Wextra -Werror -std=c11
+WARNFLAGS ?= -Wall -Wextra -Werror -std=c11
 LDFLAGS ?=
 LDLIBS ?= -lm -pthread
 EXTRA_CPPFLAGS ?=
-SANITIZER_FLAGS := -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer
-SANITIZER_ENV := ASAN_OPTIONS=halt_on_error=1:abort_on_error=0
-ALLOC_WRAP_LDFLAGS := -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc -Wl,--wrap=free -Wl,--wrap=strdup -Wl,--wrap=realpath
+EXTRA_SOURCES ?=
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "2.0.0-unknown")
-CPPFLAGS += -DFCONCAT_VERSION=\"$(VERSION)\"
-CPPFLAGS += $(EXTRA_CPPFLAGS)
+CPPFLAGS += -DFCONCAT_VERSION=\"$(VERSION)\" $(EXTRA_CPPFLAGS)
 
-SRC := \
+SOURCES := \
 	src/config/config.c \
 	src/core/context.c \
 	src/core/error.c \
@@ -36,28 +32,36 @@ SRC := \
 	src/server/server.c \
 	src/main.c
 
-TEST_SRC := \
+TEST_SOURCES := \
 	tests/test_main.c \
 	tests/unit/test_config.c \
 	tests/unit/test_filter.c \
 	tests/unit/test_memory.c \
 	tests/integration/test_traversal.c
 
-EXTRA_SRC ?=
+OBJECTS := $(SOURCES:.c=.o)
+TEST_OBJECTS := $(TEST_SOURCES:.c=.o)
+EXTRA_OBJECTS := $(EXTRA_SOURCES:.c=.o)
+DEPS := $(OBJECTS:.o=.d) $(TEST_OBJECTS:.o=.d) $(EXTRA_OBJECTS:.o=.d)
 
-OBJ := $(SRC:.c=.o)
-TEST_OBJ := $(TEST_SRC:.c=.o)
-EXTRA_OBJ := $(EXTRA_SRC:.c=.o)
-DEP := $(OBJ:.o=.d) $(TEST_OBJ:.o=.d) $(EXTRA_OBJ:.o=.d)
+SANITIZER_FLAGS := -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer
+SANITIZER_LDFLAGS := -fsanitize=address,undefined \
+	-Wl,--wrap=malloc \
+	-Wl,--wrap=calloc \
+	-Wl,--wrap=realloc \
+	-Wl,--wrap=free \
+	-Wl,--wrap=strdup \
+	-Wl,--wrap=realpath
+SANITIZER_ENV := ASAN_OPTIONS=halt_on_error=1:abort_on_error=0
 
 .PHONY: all test sanitize-test release bench bench-real install uninstall clean
 
 all: $(TARGET)
 
-$(TARGET): $(OBJ) $(EXTRA_OBJ)
+$(TARGET): $(OBJECTS) $(EXTRA_OBJECTS)
 	$(CC) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
-$(TEST_TARGET): $(filter-out src/main.o,$(OBJ)) $(TEST_OBJ) $(EXTRA_OBJ)
+$(TEST_TARGET): $(filter-out src/main.o,$(OBJECTS)) $(TEST_OBJECTS) $(EXTRA_OBJECTS)
 	$(CC) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
 %.o: %.c
@@ -68,7 +72,12 @@ test: $(TARGET) $(TEST_TARGET)
 
 sanitize-test:
 	$(MAKE) clean
-	$(MAKE) CC=clang EXTRA_CPPFLAGS="-DFCONCAT_LEAK_GUARD" CFLAGS="$(SANITIZER_FLAGS)" LDFLAGS="-fsanitize=address,undefined $(ALLOC_WRAP_LDFLAGS)" EXTRA_SRC="tests/leak_guard.c" $(TARGET) $(TEST_TARGET)
+	$(MAKE) CC=clang \
+		EXTRA_CPPFLAGS="-DFCONCAT_LEAK_GUARD" \
+		CFLAGS="$(SANITIZER_FLAGS)" \
+		LDFLAGS="$(SANITIZER_LDFLAGS)" \
+		EXTRA_SOURCES="tests/leak_guard.c" \
+		$(TARGET) $(TEST_TARGET)
 	$(SANITIZER_ENV) ./$(TEST_TARGET)
 
 release:
@@ -88,8 +97,7 @@ bench: release
 		status="$$?"; \
 		end_ns="$$(date +%s%N)"; \
 		if [ "$$status" -ne 0 ]; then exit "$$status"; fi; \
-		elapsed_ns="$$((end_ns - start_ns))"; \
-		awk -v i="$$i" -v ns="$$elapsed_ns" 'BEGIN { printf "run %d %.3f\n", i, ns / 1000000000 }'; \
+		awk -v i="$$i" -v ns="$$((end_ns - start_ns))" 'BEGIN { printf "run %d %.3f\n", i, ns / 1000000000 }'; \
 		i="$$((i + 1))"; \
 	done
 
@@ -107,9 +115,8 @@ bench-real: release
 		status="$$?"; \
 		end_ns="$$(date +%s%N)"; \
 		if [ "$$status" -ne 0 ]; then exit "$$status"; fi; \
-		elapsed_ns="$$((end_ns - start_ns))"; \
 		bytes="$$(wc -c < "$$output")"; \
-		awk -v i="$$i" -v ns="$$elapsed_ns" -v bytes="$$bytes" 'BEGIN { printf "run %d %.3f bytes %s\n", i, ns / 1000000000, bytes }'; \
+		awk -v i="$$i" -v ns="$$((end_ns - start_ns))" -v bytes="$$bytes" 'BEGIN { printf "run %d %.3f bytes %s\n", i, ns / 1000000000, bytes }'; \
 		i="$$((i + 1))"; \
 	done; \
 	if [ "$${BENCH_KEEP_OUTPUT:-0}" != "1" ]; then rm -f "$$output"; fi
@@ -122,7 +129,7 @@ uninstall:
 	rm -f "$(DESTDIR)$(BINDIR)/$(TARGET)"
 
 clean:
-	rm -f $(TARGET) $(TEST_TARGET)
+	rm -f "$(TARGET)" "$(TEST_TARGET)"
 	find src tests -type f \( -name '*.o' -o -name '*.d' \) -delete
 
--include $(DEP)
+-include $(DEPS)

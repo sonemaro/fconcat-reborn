@@ -42,7 +42,7 @@ jobs:
       - name: Build release variant
         run: |
           make clean
-          make release SECURITY=0
+          make release
 
   # ==========================================================================
   # macOS Build & Test
@@ -76,4 +76,4 @@ jobs:
       - name: Build release variant
         run: |
           make clean
-          make release SECURITY=0
+          make release

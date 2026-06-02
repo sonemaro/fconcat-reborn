@@ -38,6 +38,11 @@ Thumbs.db
 
 # Test outputs
 out.txt
+ff.txt
+hf-*.txt
+sample-*.txt
+fconcat-bench-real-output.txt
+fconcat-reborn-realworld-*.txt
 benchmarks/*.tmp
 
 # Build directories

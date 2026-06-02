@@ -1,34 +1,23 @@
-#!/bin/bash
-# build-docker.sh
+#!/bin/sh
+set -eu
 
-set -e
+image="${FCONCAT_DOCKER_IMAGE:-fconcat}"
+tag="${FCONCAT_DOCKER_TAG:-latest}"
 
-IMAGE_NAME="fconcat-compat"
-TAG="latest"
-
-if [[ "$1" == "extract" ]]; then
-  echo "Extracting 'fconcat' binary from Docker image..."
-  docker run --rm -v "$(pwd)":/output ${IMAGE_NAME}:${TAG} sh -c 'cp /usr/local/bin/fconcat /output/'
-  echo "✅ Binary extracted to $(pwd)/fconcat"
-  exit 0
+if [ "${1:-}" = "extract" ]; then
+    docker run --rm -v "$(pwd):/out" "${image}:${tag}" sh -c 'cp /usr/local/bin/fconcat /out/fconcat'
+    echo "Extracted ./fconcat"
+    exit 0
 fi
 
-echo "Building fconcat with older glibc for compatibility..."
+docker build -t "${image}:${tag}" .
 
-# Build the Docker image
-docker build -t ${IMAGE_NAME}:${TAG} .
+cat <<EOF
+Built ${image}:${tag}
 
-echo "Build complete!"
-echo ""
-echo "Usage examples:"
-echo "  # Run fconcat directly:"
-echo "  docker run --rm -v \$(pwd):/data ${IMAGE_NAME}:${TAG} /data/input /data/output"
-echo ""
-echo "  # Interactive shell:"
-echo "  docker run --rm -it -v \$(pwd):/data ${IMAGE_NAME}:${TAG} /bin/bash"
-echo ""
-echo "  # Extract binary to host:"
-echo "  ./build-docker.sh extract"
-echo ""
-echo "  # Check glibc version:"
-echo "  docker run --rm ${IMAGE_NAME}:${TAG} sh -c 'ldd --version'"
+Run:
+  docker run --rm -v "\$(pwd):/data" ${image}:${tag} /data/input /data/output.txt
+
+Extract binary:
+  ./build-docker.sh extract
+EOF
