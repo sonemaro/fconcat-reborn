@@ -49,9 +49,8 @@ extern "C"
 #include "core/error.h"
 #include "core/memory.h"
 #include "config/config.h"
-#include "format/format.h"
 #include "filter/filter.h"
-#include "plugins/plugin.h"
+#include "output/output.h"
 
 #ifdef __cplusplus
 }

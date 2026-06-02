@@ -147,15 +147,6 @@ void filter_engine_destroy(FilterEngine *engine)
 
     pthread_mutex_lock(&engine->mutex);
 
-    // Cleanup plugins
-    for (int i = 0; i < engine->plugin_count; i++)
-    {
-        if (engine->plugins[i] && engine->plugins[i]->cleanup)
-        {
-            engine->plugins[i]->cleanup(NULL);
-        }
-    }
-
     // Cleanup rule contexts
     for (int i = 0; i < engine->rule_count; i++)
     {
@@ -242,8 +233,17 @@ static int add_output_file_exclusion(FilterEngine *engine, const ResolvedConfig 
 
         ctx->pattern_count = 0;
 
-        // Add absolute path
-        ctx->patterns[ctx->pattern_count++] = strdup(abs_output);
+        ctx->patterns[ctx->pattern_count] = strdup(abs_output);
+        if (!ctx->patterns[ctx->pattern_count])
+        {
+            destroy_exclude_context_wrapper(ctx);
+            if (normalized_input != abs_input)
+                free(normalized_input);
+            free(abs_input);
+            free(abs_output);
+            return -1;
+        }
+        ctx->pattern_count++;
 
         // Add relative path
         char *rel_path = get_relative_path_util(config->input_directory, config->output_file);
@@ -253,15 +253,23 @@ static int add_output_file_exclusion(FilterEngine *engine, const ResolvedConfig 
         }
 
         // Add basename
-        ctx->patterns[ctx->pattern_count++] = strdup(get_filename_util(config->output_file));
+        ctx->patterns[ctx->pattern_count] = strdup(get_filename_util(config->output_file));
+        if (!ctx->patterns[ctx->pattern_count])
+        {
+            destroy_exclude_context_wrapper(ctx);
+            if (normalized_input != abs_input)
+                free(normalized_input);
+            free(abs_input);
+            free(abs_output);
+            return -1;
+        }
+        ctx->pattern_count++;
 
         // Create filter rule
         FilterRule rule = {
             .type = FILTER_TYPE_EXCLUDE,
             .priority = 200, // Higher priority than user patterns
             .match_path = exclude_match_path,
-            .match_content = NULL,
-            .transform = NULL,
             .destroy_context = destroy_exclude_context_wrapper,
             .context = ctx};
 
@@ -292,33 +300,25 @@ int filter_engine_configure(FilterEngine *engine, const ResolvedConfig *config)
     pthread_mutex_lock(&engine->mutex);
 
     engine->config = config;
+    int result = 0;
 
     // SUPER IMPORTANT: Prevents endless loop if src and dst are the same
-    add_output_file_exclusion(engine, config);
+    if (add_output_file_exclusion(engine, config) != 0)
+        result = -1;
 
     // Initialize built-in filters
-    filter_include_patterns_init_internal(engine, config); 
-    filter_exclude_patterns_init_internal(engine, config);
-    filter_binary_detection_init_internal(engine, config);
-    filter_symlink_handling_init_internal(engine, config);
+    if (result == 0 && filter_include_patterns_init_internal(engine, config) != 0)
+        result = -1;
+    if (result == 0 && filter_exclude_patterns_init_internal(engine, config) != 0)
+        result = -1;
+    if (result == 0 && filter_binary_detection_init_internal(engine, config) != 0)
+        result = -1;
+    if (result == 0 && filter_symlink_handling_init_internal(engine, config) != 0)
+        result = -1;
 
     pthread_mutex_unlock(&engine->mutex);
 
-    return 0;
-}
-
-int filter_engine_register_plugin(FilterEngine *engine, FilterPlugin *plugin)
-{
-    if (!engine || !plugin || engine->plugin_count >= MAX_PLUGINS)
-        return -1;
-
-    pthread_mutex_lock(&engine->mutex);
-
-    engine->plugins[engine->plugin_count] = plugin;
-    engine->plugin_count++;
-
-    pthread_mutex_unlock(&engine->mutex);
-    return 0;
+    return result;
 }
 
 int filter_engine_add_rule_internal(FilterEngine *engine, const FilterRule *rule)
@@ -361,10 +361,9 @@ int filter_engine_add_rule(FilterEngine *engine, FilterRule *rule)
 
 int filter_engine_should_include_path(FilterEngine *engine, FconcatContext *ctx, const char *path, FileInfo *info)
 {
+    (void)ctx;
     if (!engine || !path)
         return 1;
-
-    pthread_mutex_lock(&engine->mutex);
 
     // Check include rules first - if any include patterns are specified,
     // the file must match at least one include pattern
@@ -390,7 +389,6 @@ int filter_engine_should_include_path(FilterEngine *engine, FconcatContext *ctx,
     // If there are include rules but this path doesn't match any, exclude it
     if (has_include_rules && !matches_include)
     {
-        pthread_mutex_unlock(&engine->mutex);
         return 0;
     }
 
@@ -404,149 +402,10 @@ int filter_engine_should_include_path(FilterEngine *engine, FconcatContext *ctx,
             int result = rule->match_path(path, info, rule->context);
             if (result)
             {
-                pthread_mutex_unlock(&engine->mutex);
                 return 0; // Exclude this path
             }
         }
     }
 
-    // Check plugins
-    for (int i = 0; i < engine->plugin_count; i++)
-    {
-        FilterPlugin *plugin = engine->plugins[i];
-        if (plugin && plugin->should_include_path)
-        {
-            int result = plugin->should_include_path(ctx, path, info);
-            if (!result)
-            {
-                pthread_mutex_unlock(&engine->mutex);
-                return 0; // Plugin excluded this path
-            }
-        }
-    }
-
-    pthread_mutex_unlock(&engine->mutex);
     return 1; // Include by default
-}
-
-int filter_engine_should_include_content(FilterEngine *engine, FconcatContext *ctx, const char *path, const char *content, size_t size)
-{
-    if (!engine || !path || !content)
-        return 1;
-
-    pthread_mutex_lock(&engine->mutex);
-
-    // Check rules
-    for (int i = 0; i < engine->rule_count; i++)
-    {
-        FilterRule *rule = &engine->rules[i];
-
-        if (rule->match_content)
-        {
-            int result = rule->match_content(path, content, size, rule->context);
-
-            if (rule->type == FILTER_TYPE_EXCLUDE && result)
-            {
-                pthread_mutex_unlock(&engine->mutex);
-                return 0; // Exclude this content
-            }
-            else if (rule->type == FILTER_TYPE_INCLUDE && !result)
-            {
-                pthread_mutex_unlock(&engine->mutex);
-                return 0; // Don't include this content
-            }
-        }
-    }
-
-    // Check plugins
-    for (int i = 0; i < engine->plugin_count; i++)
-    {
-        FilterPlugin *plugin = engine->plugins[i];
-        if (plugin && plugin->should_include_content)
-        {
-            int result = plugin->should_include_content(ctx, path, content, size);
-            if (!result)
-            {
-                pthread_mutex_unlock(&engine->mutex);
-                return 0; // Plugin excluded this content
-            }
-        }
-    }
-
-    pthread_mutex_unlock(&engine->mutex);
-    return 1; // Include by default
-}
-
-int filter_engine_transform_content(FilterEngine *engine, FconcatContext *ctx, const char *path, const char *input, size_t input_size, char **output, size_t *output_size)
-{
-    if (!engine || !path || !input || !output || !output_size)
-        return -1;
-
-    pthread_mutex_lock(&engine->mutex);
-
-    // Get internal state to access memory manager
-    InternalContextState *internal = (InternalContextState *)ctx->internal_state;
-
-    // Start with input data - use buffer pool
-    char *current_data = memory_get_buffer(internal->memory_manager, input_size);
-    if (!current_data)
-    {
-        pthread_mutex_unlock(&engine->mutex);
-        return -1;
-    }
-    memcpy(current_data, input, input_size);
-    size_t current_size = input_size;
-
-    // Apply transform rules
-    for (int i = 0; i < engine->rule_count; i++)
-    {
-        FilterRule *rule = &engine->rules[i];
-
-        if (rule->type == FILTER_TYPE_TRANSFORM && rule->transform)
-        {
-            char *transformed_data = NULL;
-            size_t transformed_size = 0;
-
-            int result = rule->transform(path, current_data, current_size, &transformed_data, &transformed_size, rule->context);
-
-            if (result == 0 && transformed_data)
-            {
-                // Release old buffer back to pool
-                memory_release_buffer(internal->memory_manager, current_data);
-
-                // Use transformed data (might be from malloc or pool)
-                current_data = transformed_data;
-                current_size = transformed_size;
-            }
-        }
-    }
-
-    // Apply plugin transformations
-    for (int i = 0; i < engine->plugin_count; i++)
-    {
-        FilterPlugin *plugin = engine->plugins[i];
-        if (plugin && plugin->transform_content)
-        {
-            char *transformed_data = NULL;
-            size_t transformed_size = 0;
-
-            int result = plugin->transform_content(ctx, path, current_data, current_size, &transformed_data, &transformed_size);
-
-            if (result == 0 && transformed_data)
-            {
-                // Release old buffer back to pool
-                memory_release_buffer(internal->memory_manager, current_data);
-
-                // Use transformed data (might be from malloc or pool)
-                current_data = transformed_data;
-                current_size = transformed_size;
-            }
-        }
-    }
-
-    *output = current_data;
-    *output_size = current_size;
-
-    pthread_mutex_unlock(&engine->mutex);
-    return 0;
 }

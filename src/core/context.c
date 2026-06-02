@@ -1,19 +1,26 @@
 #include "context.h"
+#include "file_index.h"
 #include "version.h"
-#include "../plugins/plugin.h"
 #include "../filter/filter.h"
+#include "../output/output.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <dirent.h>
+#include <fcntl.h>
 #include <sys/stat.h>
+#ifdef __linux__
+#include <sys/sendfile.h>
+#endif
 #include <unistd.h>
 #include <time.h>
 #include <errno.h>
 
 // Maximum depth for symlink cycle detection
 #define MAX_VISITED_DIRS 256
+#define INDEX_STREAM_BUFFER_SIZE (64U * 1024U)
+#define INDEX_DIRECT_COPY_CHUNK_SIZE (8U * 1024U * 1024U)
 
 // Visited directory tracking for circular symlink detection
 typedef struct {
@@ -218,9 +225,15 @@ static int traverse_directory_internal(FconcatContext *ctx, const char *base_pat
     // Get initial directory inode
     struct stat initial_st;
     if (stat(initial_full_path, &initial_st) != 0) {
-        ctx->warning(ctx, "Cannot stat directory: %s - %s", initial_full_path, strerror(errno));
+        ctx->error(ctx, "Cannot stat input directory: %s - %s", initial_full_path, strerror(errno));
         dir_stack_destroy(stack);
-        return 0;
+        return -1;
+    }
+
+    if (!S_ISDIR(initial_st.st_mode)) {
+        ctx->error(ctx, "Input path is not a directory: %s", initial_full_path);
+        dir_stack_destroy(stack);
+        return -1;
     }
 
     // Open initial directory
@@ -232,7 +245,7 @@ static int traverse_directory_internal(FconcatContext *ctx, const char *base_pat
             ctx->warning(ctx, "Cannot open directory: %s - %s", initial_full_path, strerror(errno));
         }
         dir_stack_destroy(stack);
-        return 0;
+        return -1;
     }
 
     // Add initial directory to visited set
@@ -326,6 +339,13 @@ static int traverse_directory_internal(FconcatContext *ctx, const char *base_pat
             }
         }
 
+        EntryType entry_type = file_info.is_directory ? ENTRY_TYPE_DIRECTORY : ENTRY_TYPE_FILE;
+
+        // Check binary
+        if (entry_type == ENTRY_TYPE_FILE && !file_info.is_symlink) {
+            file_info.is_binary = (filter_is_binary_file(entry_full_path) == 1);
+        }
+
         // Check filters
         InternalContextState *internal = (InternalContextState *)ctx->internal_state;
         if (!filter_engine_should_include_path(internal->filter_engine, ctx, entry_rel_path, &file_info)) {
@@ -338,13 +358,6 @@ static int traverse_directory_internal(FconcatContext *ctx, const char *base_pat
         ctx->current_file_path = entry_rel_path;
         ctx->current_file_info = &file_info;
         ctx->current_directory_level = current->level;
-
-        EntryType entry_type = file_info.is_directory ? ENTRY_TYPE_DIRECTORY : ENTRY_TYPE_FILE;
-
-        // Check binary
-        if (entry_type == ENTRY_TYPE_FILE && !file_info.is_symlink) {
-            file_info.is_binary = (filter_is_binary_file(entry_full_path) == 1);
-        }
 
         // Callback
         int callback_result = callback->handle_entry(ctx, entry_rel_path, entry_type, &file_info, 
@@ -418,25 +431,16 @@ static int structure_callback(FconcatContext *ctx, const char *path, EntryType t
     (void)user_data; // Mark as intentionally unused
 
     InternalContextState *internal = (InternalContextState *)ctx->internal_state;
+    (void)internal;
 
     if (type == ENTRY_TYPE_DIRECTORY)
     {
-        // Write directory entry
-        if (internal->format_engine)
-        {
-            return format_engine_write_directory(internal->format_engine, ctx, path, level);
-        }
+        return text_write_directory(ctx, path, level);
     }
     else
     {
-        // Write file entry
-        if (internal->format_engine)
-        {
-            return format_engine_write_file_entry(internal->format_engine, ctx, path, info);
-        }
+        return text_write_file_entry(ctx, path, info);
     }
-
-    return 0;
 }
 
 // Content processing callback - FIXED: Removed unused parameters
@@ -465,14 +469,6 @@ static int content_callback(FconcatContext *ctx, const char *path, EntryType typ
         stats->total_files++;
     }
 
-    // Write file header
-    if (internal->format_engine)
-    {
-        int result = format_engine_write_file_header(internal->format_engine, ctx, path);
-        if (result != 0)
-            return result;
-    }
-
     // Build full path for file access
     char full_path[MAX_PATH];
     const ResolvedConfig *config = (const ResolvedConfig *)ctx->config;
@@ -481,6 +477,9 @@ static int content_callback(FconcatContext *ctx, const char *path, EntryType typ
         ctx->error(ctx, "Path too long: %s", path);
         return -1;
     }
+
+    if (text_write_file_header(ctx, path) != 0)
+        return -1;
 
     // SAFETY: Check file size limit to prevent resource exhaustion
     if (info->size > MAX_FILE_SIZE)
@@ -491,7 +490,25 @@ static int content_callback(FconcatContext *ctx, const char *path, EntryType typ
         {
             stats->skipped_files++;
         }
-        return 0; // Continue with other files
+        return text_write_file_footer(ctx);
+    }
+
+    if (info->is_symlink && config->symlink_handling == SYMLINK_PLACEHOLDER)
+    {
+        if (text_write_symlink_placeholder(ctx, full_path) != 0)
+            return -1;
+        return text_write_file_footer(ctx);
+    }
+
+    if (info->is_binary && config->binary_handling == BINARY_PLACEHOLDER)
+    {
+        if (text_write_binary_placeholder(ctx) != 0)
+            return -1;
+        if (stats)
+        {
+            stats->skipped_files++;
+        }
+        return text_write_file_footer(ctx);
     }
 
     // FIXED: Graceful file opening with permission handling
@@ -510,7 +527,11 @@ static int content_callback(FconcatContext *ctx, const char *path, EntryType typ
         {
             ctx->warning(ctx, "Cannot open file: %s - %s", full_path, strerror(errno));
         }
-        return 0; // Continue processing other files
+        if (stats)
+        {
+            stats->skipped_files++;
+        }
+        return text_write_file_footer(ctx);
     }
 
     // Determine optimal buffer size based on file size
@@ -525,10 +546,15 @@ static int content_callback(FconcatContext *ctx, const char *path, EntryType typ
         // Medium file - use 4KB buffer
         buffer_size = 4096;
     }
+    else if (info->size < 65536)
+    {
+        // Larger text files - use 16KB buffer
+        buffer_size = 16384;
+    }
     else
     {
-        // Large file - use 16KB buffer
-        buffer_size = 16384;
+        // Large files - use 64KB chunks to reduce read/write syscall overhead
+        buffer_size = 65536;
     }
 
     // Get buffer from pool
@@ -540,74 +566,31 @@ static int content_callback(FconcatContext *ctx, const char *path, EntryType typ
         return -1;
     }
 
-    // Read file content in chunks
     size_t bytes_read;
-    bool content_excluded = false;
 
     while ((bytes_read = fread(buffer, 1, buffer_size, file)) > 0)
     {
-        // Check if content should be included
-        if (!filter_engine_should_include_content(internal->filter_engine, ctx, path, buffer, bytes_read))
+        if (text_write_file_chunk(ctx, buffer, bytes_read) != 0)
         {
-            ctx->log(ctx, LOG_DEBUG, "Excluding content for: %s", path);
-            // Still count as processed but mark as skipped
-            if (stats)
-            {
-                stats->skipped_files++;
-                stats->processed_files--; // Subtract from processed count
-            }
-            content_excluded = true;
-            break;
-        }
-
-        // Transform content through filter engine
-        char *transformed_data = NULL;
-        size_t transformed_size = 0;
-
-        if (filter_engine_transform_content(internal->filter_engine, ctx, path,
-                                            buffer, bytes_read, &transformed_data, &transformed_size) == 0)
-        {
-            // Use transformed data
-            if (internal->format_engine)
-            {
-                format_engine_write_file_chunk(internal->format_engine, ctx, transformed_data, transformed_size);
-            }
-            if (stats)
-            {
-                stats->filtered_bytes += transformed_size;
-            }
-
-            // Release transformed data buffer back to pool
-            memory_release_buffer(internal->memory_manager, transformed_data);
-        }
-        else
-        {
-            // Use original data
-            if (internal->format_engine)
-            {
-                format_engine_write_file_chunk(internal->format_engine, ctx, buffer, bytes_read);
-            }
-            if (stats)
-            {
-                stats->processed_bytes += bytes_read;
-            }
+            memory_release_buffer(internal->memory_manager, buffer);
+            fclose(file);
+            return -1;
         }
 
         // Update progress
         update_context_progress(ctx, bytes_read);
     }
 
+    if (ferror(file))
+    {
+        ctx->warning(ctx, "Read error while processing file: %s", full_path);
+    }
+
     // Release buffer back to pool
     memory_release_buffer(internal->memory_manager, buffer);
     fclose(file);
 
-    // Write file footer (only if content wasn't excluded)
-    if (!content_excluded && internal->format_engine)
-    {
-        format_engine_write_file_footer(internal->format_engine, ctx);
-    }
-
-    return 0;
+    return text_write_file_footer(ctx);
 }
 
 int process_directory_structure(FconcatContext *ctx, const char *base_path, const char *relative_path, int level)
@@ -628,13 +611,458 @@ int process_directory_content(FconcatContext *ctx, const char *base_path, const 
     return traverse_directory(ctx, base_path, relative_path, level, &callback);
 }
 
+static size_t choose_stream_buffer_size(size_t file_size)
+{
+    if (file_size > 0 && file_size < 4096)
+        return file_size;
+    if (file_size < 16384)
+        return 4096;
+    if (file_size < 65536)
+        return 16384;
+    return 65536;
+}
+
+static int direct_copy_enabled(void)
+{
+    const char *env = getenv("FCONCAT_DIRECT_COPY");
+    return env && strcmp(env, "1") == 0;
+}
+
+static int stream_indexed_file_from(FconcatContext *ctx, const FileIndexEntry *entry, size_t offset,
+                                    char *buffer, size_t buffer_size, int use_direct_copy)
+{
+    if (!ctx || !entry || !buffer || buffer_size == 0)
+        return -1;
+
+    InternalContextState *internal = (InternalContextState *)ctx->internal_state;
+    ProcessingStats *stats = (ProcessingStats *)ctx->stats;
+    size_t remaining = offset < entry->info.size ? entry->info.size - offset : 0;
+
+    int input_fd = open(entry->full_path, O_RDONLY);
+    if (input_fd < 0)
+    {
+        if (errno == EACCES)
+            ctx->warning(ctx, "Permission denied opening file: %s", entry->full_path);
+        else if (errno == ENOENT)
+            ctx->warning(ctx, "File disappeared during processing: %s", entry->full_path);
+        else
+            ctx->warning(ctx, "Cannot open file: %s - %s", entry->full_path, strerror(errno));
+        if (stats)
+            stats->skipped_files++;
+        return 0;
+    }
+
+    if (offset > 0)
+    {
+        if (lseek(input_fd, (off_t)offset, SEEK_SET) < 0)
+        {
+            ctx->warning(ctx, "Cannot seek cached prefix in file: %s - %s",
+                         entry->full_path, strerror(errno));
+            offset = 0;
+            remaining = entry->info.size;
+            if (lseek(input_fd, 0, SEEK_SET) < 0)
+            {
+                close(input_fd);
+                return -1;
+            }
+        }
+    }
+
+#ifdef __linux__
+    int output_fd = use_direct_copy && internal ? output_sink_fd(internal->output_sink) : -1;
+    if (output_fd >= 0 && remaining > 0)
+    {
+        if (output_sink_flush(internal->output_sink) != 0)
+        {
+            close(input_fd);
+            return -1;
+        }
+
+        off_t send_offset = (off_t)offset;
+        size_t left = remaining;
+        int fallback_to_read = 0;
+
+        while (left > 0)
+        {
+            size_t chunk = left > INDEX_DIRECT_COPY_CHUNK_SIZE ? INDEX_DIRECT_COPY_CHUNK_SIZE : left;
+            ssize_t sent = sendfile(output_fd, input_fd, &send_offset, chunk);
+            if (sent < 0)
+            {
+                if (errno == EINTR)
+                    continue;
+                if (left == remaining &&
+                    (errno == EINVAL || errno == ENOSYS || errno == EXDEV || errno == EOPNOTSUPP))
+                {
+                    fallback_to_read = 1;
+                    break;
+                }
+                if (lseek(input_fd, send_offset, SEEK_SET) < 0)
+                {
+                    ctx->warning(ctx, "Cannot recover direct copy for file: %s - %s",
+                                 entry->full_path, strerror(errno));
+                    close(input_fd);
+                    return -1;
+                }
+                fallback_to_read = 1;
+                break;
+            }
+            if (sent == 0)
+            {
+                close(input_fd);
+                return 0;
+            }
+
+            left -= (size_t)sent;
+            update_context_progress(ctx, (size_t)sent);
+        }
+
+        if (!fallback_to_read)
+        {
+            close(input_fd);
+            return 0;
+        }
+
+        offset = (size_t)send_offset;
+        remaining = offset < entry->info.size ? entry->info.size - offset : 0;
+        if (lseek(input_fd, (off_t)offset, SEEK_SET) < 0)
+        {
+            close(input_fd);
+            return -1;
+        }
+    }
+#endif
+
+    size_t read_size = choose_stream_buffer_size(remaining);
+    if (read_size > buffer_size)
+        read_size = buffer_size;
+
+    int result = 0;
+    for (;;)
+    {
+        ssize_t bytes_read = read(input_fd, buffer, read_size);
+        if (bytes_read < 0)
+        {
+            if (errno == EINTR)
+                continue;
+            ctx->warning(ctx, "Read error while processing file: %s", entry->full_path);
+            break;
+        }
+        if (bytes_read == 0)
+            break;
+
+        if (text_write_file_chunk(ctx, buffer, bytes_read) != 0)
+        {
+            result = -1;
+            break;
+        }
+        update_context_progress(ctx, (size_t)bytes_read);
+    }
+
+    close(input_fd);
+    return result;
+}
+
+static int emit_index_structure(FconcatContext *ctx, FileIndex *index,
+                                int (*should_stop)(void *user_data), void *user_data)
+{
+    if (!ctx || !index)
+        return -1;
+
+    size_t count = file_index_count(index);
+    for (size_t i = 0; i < count; i++)
+    {
+        if (should_stop && should_stop(user_data))
+            return -1;
+
+        FileIndexEntry *entry = file_index_entry(index, i);
+        if (!entry)
+            return -1;
+
+        ctx->current_file_path = entry->relative_path;
+        ctx->current_file_info = &entry->info;
+        ctx->current_directory_level = entry->level;
+
+        int result = entry->info.is_directory
+                         ? text_write_directory(ctx, entry->relative_path, entry->level)
+                         : text_write_file_entry(ctx, entry->relative_path, &entry->info);
+
+        ctx->current_file_info = NULL;
+        if (result != 0)
+            return result;
+    }
+
+    return 0;
+}
+
+static int emit_index_content(FconcatContext *ctx, const ResolvedConfig *config, FileIndex *index,
+                              char *stream_buffer, size_t stream_buffer_size,
+                              int use_direct_copy,
+                              int (*should_stop)(void *user_data), void *user_data)
+{
+    if (!ctx || !config || !index || !stream_buffer || stream_buffer_size == 0)
+        return -1;
+
+    ProcessingStats *stats = (ProcessingStats *)ctx->stats;
+    size_t count = file_index_count(index);
+
+    for (size_t i = 0; i < count; i++)
+    {
+        if (should_stop && should_stop(user_data))
+            return -1;
+
+        FileIndexEntry *entry = file_index_entry(index, i);
+        if (!entry)
+            return -1;
+        if (entry->info.is_directory)
+            continue;
+
+        ctx->log(ctx, LOG_DEBUG, "Processing file: %s", entry->relative_path);
+        ctx->current_file_path = entry->relative_path;
+        ctx->current_file_info = &entry->info;
+        ctx->current_directory_level = entry->level;
+        ctx->current_file_processed_bytes = 0;
+
+        if (stats)
+        {
+            stats->processed_files++;
+            stats->total_files++;
+            stats->total_bytes += entry->info.size;
+        }
+
+        if (text_write_file_header(ctx, entry->relative_path) != 0)
+        {
+            ctx->current_file_info = NULL;
+            return -1;
+        }
+
+        if (entry->info.size > MAX_FILE_SIZE)
+        {
+            ctx->warning(ctx, "File too large, skipping (limit %lluMB): %s (%zu bytes)",
+                         (unsigned long long)(MAX_FILE_SIZE / (1024 * 1024)),
+                         entry->relative_path, entry->info.size);
+            if (stats)
+                stats->skipped_files++;
+            if (text_write_file_footer(ctx) != 0)
+            {
+                ctx->current_file_info = NULL;
+                return -1;
+            }
+            ctx->current_file_info = NULL;
+            continue;
+        }
+
+        if (entry->info.is_symlink && config->symlink_handling == SYMLINK_PLACEHOLDER)
+        {
+            if (text_write_symlink_placeholder(ctx, entry->full_path) != 0 ||
+                text_write_file_footer(ctx) != 0)
+            {
+                ctx->current_file_info = NULL;
+                return -1;
+            }
+            ctx->current_file_info = NULL;
+            continue;
+        }
+
+        if (entry->info.is_binary && config->binary_handling == BINARY_PLACEHOLDER)
+        {
+            if (text_write_binary_placeholder(ctx) != 0)
+            {
+                ctx->current_file_info = NULL;
+                return -1;
+            }
+            if (stats)
+                stats->skipped_files++;
+            if (text_write_file_footer(ctx) != 0)
+            {
+                ctx->current_file_info = NULL;
+                return -1;
+            }
+            ctx->current_file_info = NULL;
+            continue;
+        }
+
+        int result = 0;
+        if (entry->prefix_complete && entry->prefix_size > 0)
+        {
+            result = text_write_file_chunk(ctx, entry->prefix_data, entry->prefix_size);
+            if (result == 0)
+                update_context_progress(ctx, entry->prefix_size);
+        }
+        else if (entry->prefix_size > 0)
+        {
+            if (text_write_file_chunk(ctx, entry->prefix_data, entry->prefix_size) != 0)
+                result = -1;
+            else
+            {
+                update_context_progress(ctx, entry->prefix_size);
+                result = stream_indexed_file_from(ctx, entry, entry->prefix_size,
+                                                  stream_buffer, stream_buffer_size,
+                                                  use_direct_copy);
+            }
+        }
+        else
+        {
+            result = stream_indexed_file_from(ctx, entry, 0, stream_buffer, stream_buffer_size,
+                                              use_direct_copy);
+        }
+
+        if (result != 0 || text_write_file_footer(ctx) != 0)
+        {
+            ctx->current_file_info = NULL;
+            return -1;
+        }
+
+        ctx->current_file_info = NULL;
+    }
+
+    return 0;
+}
+
+static int output_path_is_null_device(const char *path)
+{
+    return path && strcmp(path, "/dev/null") == 0;
+}
+
+static int process_null_output_index(FconcatContext *ctx, const ResolvedConfig *config, FileIndex *index,
+                                     int (*should_stop)(void *user_data), void *user_data)
+{
+    if (!ctx || !config || !index)
+        return -1;
+
+    ProcessingStats *stats = (ProcessingStats *)ctx->stats;
+    size_t count = file_index_count(index);
+    for (size_t i = 0; i < count; i++)
+    {
+        if (should_stop && should_stop(user_data))
+            return -1;
+
+        FileIndexEntry *entry = file_index_entry(index, i);
+        if (!entry)
+            return -1;
+        if (entry->info.is_directory)
+            continue;
+
+        if (stats)
+        {
+            stats->processed_files++;
+            stats->total_files++;
+            stats->total_bytes += entry->info.size;
+        }
+
+        if (entry->info.size > MAX_FILE_SIZE ||
+            (entry->info.is_binary && config->binary_handling == BINARY_PLACEHOLDER) ||
+            (entry->info.is_symlink && config->symlink_handling == SYMLINK_PLACEHOLDER))
+        {
+            if (stats)
+                stats->skipped_files++;
+            continue;
+        }
+
+        if (stats)
+            stats->processed_bytes += entry->info.size;
+    }
+
+    return text_end_document(ctx);
+}
+
+static size_t resolve_prefix_cache_budget(int null_output)
+{
+    if (null_output)
+        return 0;
+
+    const char *env = getenv("FCONCAT_PREFIX_CACHE_MB");
+    if (!env || env[0] == '\0')
+        return FILE_INDEX_DEFAULT_PREFIX_BUDGET;
+
+    char *end = NULL;
+    unsigned long long mb = strtoull(env, &end, 10);
+    if (!end || *end != '\0')
+        return FILE_INDEX_DEFAULT_PREFIX_BUDGET;
+    if (mb > (SIZE_MAX / (1024ULL * 1024ULL)))
+        return FILE_INDEX_DEFAULT_PREFIX_BUDGET;
+    return (size_t)mb * 1024ULL * 1024ULL;
+}
+
+int process_fconcat_document(FconcatContext *ctx, const ResolvedConfig *config,
+                             int (*should_stop)(void *user_data), void *user_data)
+{
+    if (!ctx || !config || !config->input_directory)
+        return -1;
+
+    InternalContextState *internal = (InternalContextState *)ctx->internal_state;
+    int null_output = output_path_is_null_device(config->output_file);
+    FileIndex *index = file_index_create(resolve_prefix_cache_budget(null_output));
+    if (!index)
+    {
+        ctx->error(ctx, "Failed to allocate file index");
+        return -1;
+    }
+
+    char *stream_buffer = NULL;
+    int result = -1;
+
+    if (file_index_build(index, ctx, config, internal ? internal->filter_engine : NULL,
+                         should_stop, user_data) != 0)
+        goto cleanup;
+
+    if (should_stop && should_stop(user_data))
+        goto cleanup;
+
+    if (null_output)
+    {
+        result = process_null_output_index(ctx, config, index, should_stop, user_data);
+        goto cleanup;
+    }
+
+    if (text_begin_document(ctx) != 0)
+        goto cleanup;
+
+    if (text_begin_structure(ctx) != 0)
+        goto cleanup;
+
+    if (emit_index_structure(ctx, index, should_stop, user_data) != 0)
+        goto cleanup;
+
+    if (should_stop && should_stop(user_data))
+        goto cleanup;
+
+    if (text_end_structure(ctx) != 0)
+        goto cleanup;
+
+    if (text_begin_content(ctx) != 0)
+        goto cleanup;
+
+    stream_buffer = malloc(INDEX_STREAM_BUFFER_SIZE);
+    if (!stream_buffer)
+    {
+        ctx->error(ctx, "Failed to allocate stream buffer");
+        goto cleanup;
+    }
+
+    if (emit_index_content(ctx, config, index, stream_buffer, INDEX_STREAM_BUFFER_SIZE,
+                           direct_copy_enabled(),
+                           should_stop, user_data) != 0)
+        goto cleanup;
+
+    if (should_stop && should_stop(user_data))
+        goto cleanup;
+
+    if (text_end_content(ctx) != 0)
+        goto cleanup;
+
+    result = text_end_document(ctx);
+
+cleanup:
+    free(stream_buffer);
+    file_index_destroy(index);
+    return result;
+}
+
 FconcatContext *create_fconcat_context(const ResolvedConfig *config,
-                                       FILE *output_file,
+                                       OutputSink *output_sink,
                                        ProcessingStats *stats,
                                        ErrorManager *error_manager,
                                        MemoryManager *memory_manager,
-                                       struct PluginManager *plugin_manager,
-                                       struct FormatEngine *format_engine,
                                        struct FilterEngine *filter_engine)
 {
     // Use heap allocation for context to ensure it's properly isolated
@@ -650,13 +1078,12 @@ FconcatContext *create_fconcat_context(const ResolvedConfig *config,
     }
 
     // Initialize internal state
-    internal_state->output_file = output_file;
+    internal_state->output_file = NULL;
+    internal_state->output_sink = output_sink;
     internal_state->config = config;
     internal_state->stats = stats;
     internal_state->error_manager = error_manager;
     internal_state->memory_manager = memory_manager;
-    internal_state->plugin_manager = plugin_manager;
-    internal_state->format_engine = format_engine;
     internal_state->filter_engine = filter_engine;
     internal_state->progress_callback = NULL;
     internal_state->progress_user_data = NULL;
@@ -666,10 +1093,6 @@ FconcatContext *create_fconcat_context(const ResolvedConfig *config,
     ctx->get_config_string = context_get_config_string;
     ctx->get_config_int = context_get_config_int;
     ctx->get_config_bool = context_get_config_bool;
-
-    ctx->get_plugin_parameter = context_get_plugin_parameter;
-    ctx->get_plugin_parameter_count = context_get_plugin_parameter_count;
-    ctx->get_plugin_parameter_by_index = context_get_plugin_parameter_by_index;
 
     ctx->log = context_log;
     ctx->vlog = context_vlog;
@@ -695,10 +1118,6 @@ FconcatContext *create_fconcat_context(const ResolvedConfig *config,
 
     ctx->progress = context_progress;
     ctx->set_progress_callback = context_set_progress_callback;
-
-    ctx->get_plugin_data = context_get_plugin_data;
-    ctx->set_plugin_data = context_set_plugin_data;
-    ctx->call_plugin_method = context_call_plugin_method;
 
     ctx->create_stream_buffer = context_create_stream_buffer;
     ctx->stream_write = context_stream_write;
@@ -766,11 +1185,7 @@ const char *context_get_config_string(FconcatContext *ctx, const char *key)
 
     const ResolvedConfig *config = (const ResolvedConfig *)ctx->config;
 
-    if (strcmp(key, "output_format") == 0)
-    {
-        return config->output_format;
-    }
-    else if (strcmp(key, "input_directory") == 0)
+    if (strcmp(key, "input_directory") == 0)
     {
         return config->input_directory;
     }
@@ -820,54 +1235,7 @@ bool context_get_config_bool(FconcatContext *ctx, const char *key)
     {
         return config->verbose;
     }
-    else if (strcmp(key, "interactive") == 0)
-    {
-        return config->interactive;
-    }
-
     return false;
-}
-
-const char *context_get_plugin_parameter(FconcatContext *ctx, const char *plugin_name, const char *param_name)
-{
-    if (!ctx || !plugin_name || !param_name)
-        return NULL;
-
-    InternalContextState *state = (InternalContextState *)ctx->internal_state;
-    if (state && state->plugin_manager)
-    {
-        return plugin_manager_get_parameter(state->plugin_manager, plugin_name, param_name);
-    }
-
-    return NULL;
-}
-
-int context_get_plugin_parameter_count(FconcatContext *ctx, const char *plugin_name)
-{
-    if (!ctx || !plugin_name)
-        return 0;
-
-    InternalContextState *state = (InternalContextState *)ctx->internal_state;
-    if (state && state->plugin_manager)
-    {
-        return plugin_manager_get_parameter_count(state->plugin_manager, plugin_name);
-    }
-
-    return 0;
-}
-
-const char *context_get_plugin_parameter_by_index(FconcatContext *ctx, const char *plugin_name, int index)
-{
-    if (!ctx || !plugin_name || index < 0)
-        return NULL;
-
-    InternalContextState *state = (InternalContextState *)ctx->internal_state;
-    if (state && state->plugin_manager)
-    {
-        return plugin_manager_get_parameter_by_index(state->plugin_manager, plugin_name, index);
-    }
-
-    return NULL;
 }
 
 void context_log(FconcatContext *ctx, LogLevel level, const char *format, ...)
@@ -982,11 +1350,9 @@ int context_write_output(FconcatContext *ctx, const char *data, size_t size)
         return -1;
 
     InternalContextState *state = (InternalContextState *)ctx->internal_state;
-    if (state && state->output_file)
+    if (state && state->output_sink)
     {
-        if (size == 0)
-            size = strlen(data);
-        return fwrite(data, 1, size, state->output_file) == size ? 0 : -1;
+        return output_sink_write(state->output_sink, data, size);
     }
 
     return -1;
@@ -997,19 +1363,43 @@ int context_write_output_fmt(FconcatContext *ctx, const char *format, ...)
     if (!ctx || !format)
         return -1;
 
-    va_list args;
-    va_start(args, format);
-
     InternalContextState *state = (InternalContextState *)ctx->internal_state;
-    if (state && state->output_file)
+    if (!state || !state->output_sink)
     {
-        int result = vfprintf(state->output_file, format, args);
-        va_end(args);
-        return result;
+        return -1;
     }
 
+    va_list args;
+    va_start(args, format);
+    va_list copy;
+    va_copy(copy, args);
+    int needed = vsnprintf(NULL, 0, format, copy);
+    va_end(copy);
+    if (needed < 0)
+    {
+        va_end(args);
+        return -1;
+    }
+
+    char stack_buf[512];
+    if ((size_t)needed < sizeof(stack_buf))
+    {
+        vsnprintf(stack_buf, sizeof(stack_buf), format, args);
+        va_end(args);
+        return output_sink_write(state->output_sink, stack_buf, (size_t)needed);
+    }
+
+    char *heap_buf = malloc((size_t)needed + 1);
+    if (!heap_buf)
+    {
+        va_end(args);
+        return -1;
+    }
+    vsnprintf(heap_buf, (size_t)needed + 1, format, args);
     va_end(args);
-    return -1;
+    int result = output_sink_write(state->output_sink, heap_buf, (size_t)needed);
+    free(heap_buf);
+    return result;
 }
 
 void context_error(FconcatContext *ctx, const char *format, ...)
@@ -1083,48 +1473,6 @@ void context_set_progress_callback(FconcatContext *ctx, ProgressCallback callbac
         state->progress_callback = callback;
         state->progress_user_data = user_data;
     }
-}
-
-void *context_get_plugin_data(FconcatContext *ctx, const char *plugin_name)
-{
-    if (!ctx || !plugin_name)
-        return NULL;
-
-    InternalContextState *state = (InternalContextState *)ctx->internal_state;
-    if (state && state->plugin_manager)
-    {
-        return plugin_manager_get_plugin_data(state->plugin_manager, plugin_name);
-    }
-
-    return NULL;
-}
-
-int context_set_plugin_data(FconcatContext *ctx, const char *plugin_name, void *data, size_t size)
-{
-    if (!ctx || !plugin_name || !data)
-        return -1;
-
-    InternalContextState *state = (InternalContextState *)ctx->internal_state;
-    if (state && state->plugin_manager)
-    {
-        return plugin_manager_set_plugin_data(state->plugin_manager, plugin_name, data, size);
-    }
-
-    return -1;
-}
-
-int context_call_plugin_method(FconcatContext *ctx, const char *plugin_name, const char *method, void *args)
-{
-    if (!ctx || !plugin_name || !method)
-        return -1;
-
-    InternalContextState *state = (InternalContextState *)ctx->internal_state;
-    if (state && state->plugin_manager)
-    {
-        return plugin_manager_call_plugin_method(state->plugin_manager, plugin_name, method, args);
-    }
-
-    return -1;
 }
 
 void *context_create_stream_buffer(FconcatContext *ctx, size_t initial_size)

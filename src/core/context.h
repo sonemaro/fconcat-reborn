@@ -5,6 +5,7 @@
 #include "../core/error.h"
 #include "../core/memory.h"
 #include "../../include/fconcat_api.h"
+#include "../output/output.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -12,8 +13,6 @@ extern "C"
 #endif
 
     // Forward declarations
-    struct PluginManager;
-    struct FormatEngine;
     struct FilterEngine;
 
     // Directory entry callback type
@@ -34,12 +33,11 @@ extern "C"
     typedef struct
     {
         FILE *output_file;
+        OutputSink *output_sink;
         const ResolvedConfig *config;
         ProcessingStats *stats;
         ErrorManager *error_manager;
         MemoryManager *memory_manager;
-        struct PluginManager *plugin_manager;
-        struct FormatEngine *format_engine;
         struct FilterEngine *filter_engine;
         ProgressCallback progress_callback;
         void *progress_user_data;
@@ -47,12 +45,10 @@ extern "C"
 
     // Context creation and management
     FconcatContext *create_fconcat_context(const ResolvedConfig *config,
-                                           FILE *output_file,
+                                           OutputSink *output_sink,
                                            ProcessingStats *stats,
                                            ErrorManager *error_manager,
                                            MemoryManager *memory_manager,
-                                           struct PluginManager *plugin_manager,
-                                           struct FormatEngine *format_engine,
                                            struct FilterEngine *filter_engine);
 
     void destroy_fconcat_context(FconcatContext *ctx);
@@ -63,16 +59,13 @@ extern "C"
                            int level, DirectoryCallback *callback);
     int process_directory_structure(FconcatContext *ctx, const char *base_path, const char *relative_path, int level);
     int process_directory_content(FconcatContext *ctx, const char *base_path, const char *relative_path, int level);
+    int process_fconcat_document(FconcatContext *ctx, const ResolvedConfig *config,
+                                 int (*should_stop)(void *user_data), void *user_data);
 
     // Context service implementations (now take FconcatContext* as first parameter)
     const char *context_get_config_string(FconcatContext *ctx, const char *key);
     int context_get_config_int(FconcatContext *ctx, const char *key);
     bool context_get_config_bool(FconcatContext *ctx, const char *key);
-
-    // Plugin parameter access functions
-    const char *context_get_plugin_parameter(FconcatContext *ctx, const char *plugin_name, const char *param_name);
-    int context_get_plugin_parameter_count(FconcatContext *ctx, const char *plugin_name);
-    const char *context_get_plugin_parameter_by_index(FconcatContext *ctx, const char *plugin_name, int index);
 
     void context_log(FconcatContext *ctx, LogLevel level, const char *format, ...);
     void context_vlog(FconcatContext *ctx, LogLevel level, const char *format, va_list args);
@@ -87,9 +80,6 @@ extern "C"
     int context_get_error_count(FconcatContext *ctx);
     void context_progress(FconcatContext *ctx, const char *operation, size_t current, size_t total);
     void context_set_progress_callback(FconcatContext *ctx, ProgressCallback callback, void *user_data);
-    void *context_get_plugin_data(FconcatContext *ctx, const char *plugin_name);
-    int context_set_plugin_data(FconcatContext *ctx, const char *plugin_name, void *data, size_t size);
-    int context_call_plugin_method(FconcatContext *ctx, const char *plugin_name, const char *method, void *args);
     void *context_create_stream_buffer(FconcatContext *ctx, size_t initial_size);
     int context_stream_write(FconcatContext *ctx, void *buffer, const char *data, size_t size);
     int context_stream_flush(FconcatContext *ctx, void *buffer);

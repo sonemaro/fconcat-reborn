@@ -29,7 +29,12 @@ static int temp_dir_created = 0;
 static void create_test_temp_dir(void)
 {
     if (temp_dir_created) return;
-    snprintf(test_temp_dir, sizeof(test_temp_dir), "/tmp/fconcat_test_%d", getpid());
+    const char *base = getenv("TMPDIR");
+    if (!base || base[0] == '\0')
+        base = getenv("HOME");
+    if (!base || base[0] == '\0')
+        base = ".";
+    snprintf(test_temp_dir, sizeof(test_temp_dir), "%s/fconcat_test_%d", base, getpid());
     mkdir(test_temp_dir, 0755);
     temp_dir_created = 1;
 }
@@ -81,7 +86,6 @@ TEST(filter_engine_initial_state)
     ASSERT_NOT_NULL(engine);
     ASSERT_NOT_NULL(engine->rules);
     ASSERT_EQ(0, engine->rule_count);
-    ASSERT_EQ(0, engine->plugin_count);
     filter_engine_destroy(engine);
     return 0;
 }

@@ -195,12 +195,89 @@ TEST(config_resolve_returns_valid_config)
 {
     ConfigManager *mgr = config_manager_create();
     ASSERT_NOT_NULL(mgr);
-    
-    config_load_defaults(mgr);
-    
+
+    ASSERT_EQ(0, config_load_defaults(mgr));
+    char *argv[] = {"fconcat", "input", "output.txt", "--show-size"};
+    ASSERT_EQ(0, config_load_cli(mgr, 4, argv));
+
     ResolvedConfig *resolved = config_resolve(mgr);
     ASSERT_NOT_NULL(resolved);
+    ASSERT_EQ(FCONCAT_MODE_BATCH, resolved->mode);
+    ASSERT_STR_EQ("input", resolved->input_directory);
+    ASSERT_STR_EQ("output.txt", resolved->output_file);
+    ASSERT_TRUE(resolved->show_size);
     
+    config_manager_destroy(mgr);
+    return 0;
+}
+
+TEST(config_resolve_defaults_only_is_invalid_batch_config)
+{
+    ConfigManager *mgr = config_manager_create();
+    ASSERT_NOT_NULL(mgr);
+
+    ASSERT_EQ(0, config_load_defaults(mgr));
+
+    ResolvedConfig *resolved = config_resolve(mgr);
+    ASSERT_NULL(resolved);
+
+    config_manager_destroy(mgr);
+    return 0;
+}
+
+TEST(config_cli_rejects_removed_format_option)
+{
+    ConfigManager *mgr = config_manager_create();
+    ASSERT_NOT_NULL(mgr);
+
+    ASSERT_EQ(0, config_load_defaults(mgr));
+    char *argv[] = {"fconcat", "input", "output.txt", "--format", "json"};
+    ASSERT_EQ(-1, config_load_cli(mgr, 5, argv));
+
+    config_manager_destroy(mgr);
+    return 0;
+}
+
+TEST(config_cli_rejects_removed_plugin_option)
+{
+    ConfigManager *mgr = config_manager_create();
+    ASSERT_NOT_NULL(mgr);
+
+    ASSERT_EQ(0, config_load_defaults(mgr));
+    char *argv[] = {"fconcat", "input", "output.txt", "--plugin", "x.so"};
+    ASSERT_EQ(-1, config_load_cli(mgr, 5, argv));
+
+    config_manager_destroy(mgr);
+    return 0;
+}
+
+TEST(config_resolve_server_config)
+{
+    ConfigManager *mgr = config_manager_create();
+    ASSERT_NOT_NULL(mgr);
+
+    ASSERT_EQ(0, config_load_defaults(mgr));
+    char *argv[] = {
+        "fconcat", "--serve",
+        "--listen", "127.0.0.1:9090",
+        "--allow-root", ".",
+        "--workers", "2",
+        "--queue", "8",
+        "--auth-token", "secret"
+    };
+    ASSERT_EQ(0, config_load_cli(mgr, 12, argv));
+
+    ResolvedConfig *resolved = config_resolve(mgr);
+    ASSERT_NOT_NULL(resolved);
+    ASSERT_EQ(FCONCAT_MODE_SERVER, resolved->mode);
+    ASSERT_STR_EQ("127.0.0.1", resolved->listen_host);
+    ASSERT_EQ(9090, resolved->listen_port);
+    ASSERT_EQ(1, resolved->allow_root_count);
+    ASSERT_STR_EQ(".", resolved->allow_roots[0]);
+    ASSERT_EQ(2, resolved->server_workers);
+    ASSERT_EQ(8, resolved->server_queue_size);
+    ASSERT_STR_EQ("secret", resolved->auth_token);
+
     config_manager_destroy(mgr);
     return 0;
 }
@@ -223,10 +300,8 @@ TEST(config_get_string_returns_value)
     
     config_load_defaults(mgr);
     
-    // Get a string value that should exist in defaults
-    const char *format = config_get_string(mgr, "format");
-    // format might be NULL if not in defaults, that's ok
-    (void)format;
+    const char *listen = config_get_string(mgr, "listen");
+    ASSERT_STR_EQ("127.0.0.1:8080", listen);
     
     config_manager_destroy(mgr);
     return 0;
@@ -288,6 +363,10 @@ int test_config_main(void)
     
     TEST_SUITE_BEGIN("Configuration Resolution");
     RUN_TEST(config_resolve_returns_valid_config);
+    RUN_TEST(config_resolve_defaults_only_is_invalid_batch_config);
+    RUN_TEST(config_cli_rejects_removed_format_option);
+    RUN_TEST(config_cli_rejects_removed_plugin_option);
+    RUN_TEST(config_resolve_server_config);
     RUN_TEST(config_resolve_null_manager);
     
     TEST_SUITE_BEGIN("Configuration Getters");

@@ -146,8 +146,6 @@ int filter_exclude_patterns_init_internal(FilterEngine *engine, const ResolvedCo
         .type = FILTER_TYPE_EXCLUDE,
         .priority = 100,
         .match_path = exclude_match_path,
-        .match_content = NULL,
-        .transform = NULL,
         .destroy_context = destroy_exclude_context_wrapper,
         .context = ctx};
 

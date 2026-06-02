@@ -33,14 +33,12 @@ extern "C"
     ConfigManager *config_manager_create(void);
     void config_manager_destroy(ConfigManager *manager);
     int config_load_defaults(ConfigManager *manager);
-    int config_load_file(ConfigManager *manager, const char *path);
-    int config_load_environment(ConfigManager *manager);
     int config_load_cli(ConfigManager *manager, int argc, char *argv[]);
     ResolvedConfig *config_resolve(ConfigManager *manager);
+    void resolved_config_cleanup(ResolvedConfig *config);
     const char *config_get_string(ConfigManager *manager, const char *key);
     int config_get_int(ConfigManager *manager, const char *key);
     bool config_get_bool(ConfigManager *manager, const char *key);
-    double config_get_float(ConfigManager *manager, const char *key);
 
     // Configuration value functions
     int config_value_init(ConfigValue *value, const char *key, ConfigType type);
@@ -48,7 +46,6 @@ extern "C"
     void config_value_set_string(ConfigValue *value, const char *str);
     void config_value_set_int(ConfigValue *value, int val);
     void config_value_set_bool(ConfigValue *value, bool val);
-    void config_value_set_float(ConfigValue *value, double val);
 
     // Layer management
     int config_layer_add_value(ConfigLayer *layer, const char *key, ConfigType type);

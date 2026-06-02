@@ -157,8 +157,6 @@ int filter_include_patterns_init_internal(FilterEngine *engine, const ResolvedCo
         .type = FILTER_TYPE_INCLUDE,
         .priority = 50,  // Higher priority than exclude patterns
         .match_path = include_match_path,
-        .match_content = NULL,
-        .transform = NULL,
         .destroy_context = destroy_include_context_wrapper,
         .context = ctx};
 

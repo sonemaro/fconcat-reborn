@@ -1,24 +1,21 @@
 #include "config.h"
-#include "../core/error.h"
-#include "../core/memory.h"
 #include "../../include/fconcat_api.h"
+#include <errno.h>
+#include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
 
-// FIXED: Removed fragile allocation pattern, using stack allocation
 static int config_layer_init(ConfigLayer *layer, ConfigSource source, int priority)
 {
     if (!layer)
         return -1;
 
+    memset(layer, 0, sizeof(*layer));
     layer->source = source;
     layer->priority = priority;
-    layer->value_capacity = 50;
-    layer->values = calloc(layer->value_capacity, sizeof(ConfigValue));
-    layer->value_count = 0;
-    layer->source_data = NULL;
-
+    layer->value_capacity = 32;
+    layer->values = calloc((size_t)layer->value_capacity, sizeof(ConfigValue));
     return layer->values ? 0 : -1;
 }
 
@@ -28,56 +25,178 @@ static void config_layer_cleanup(ConfigLayer *layer)
         return;
 
     for (int i = 0; i < layer->value_count; i++)
-    {
         config_value_cleanup(&layer->values[i]);
-    }
+
     free(layer->values);
     free(layer->source_data);
-
-    layer->values = NULL;
-    layer->value_count = 0;
-    layer->value_capacity = 0;
-    layer->source_data = NULL;
+    memset(layer, 0, sizeof(*layer));
 }
 
-int config_layer_add_value(ConfigLayer *layer, const char *key, ConfigType type)
+static int parse_positive_int(const char *value, int min, int max, int *out)
 {
-    if (!layer || !key)
+    if (!value || !out)
         return -1;
 
-    // Resize if needed
-    if (layer->value_count >= layer->value_capacity)
-    {
-        int new_capacity = layer->value_capacity * 2;
-        ConfigValue *new_values = realloc(layer->values, new_capacity * sizeof(ConfigValue));
-        if (!new_values)
-            return -1;
-
-        layer->values = new_values;
-        layer->value_capacity = new_capacity;
-    }
-
-    // Initialize new value
-    ConfigValue *value = &layer->values[layer->value_count];
-    if (config_value_init(value, key, type) != 0)
+    errno = 0;
+    char *end = NULL;
+    long parsed = strtol(value, &end, 10);
+    if (errno != 0 || !end || *end != '\0' || parsed < min || parsed > max)
         return -1;
 
-    layer->value_count++;
+    *out = (int)parsed;
     return 0;
 }
 
-ConfigValue *config_layer_get_value(ConfigLayer *layer, const char *key)
+static int parse_log_level(const char *value, int *out)
 {
-    if (!layer || !key)
-        return NULL;
+    if (!value || !out)
+        return -1;
 
-    for (int i = 0; i < layer->value_count; i++)
+    if (strcmp(value, "error") == 0)
+        *out = (int)LOG_ERROR;
+    else if (strcmp(value, "warning") == 0)
+        *out = (int)LOG_WARNING;
+    else if (strcmp(value, "info") == 0)
+        *out = (int)LOG_INFO;
+    else if (strcmp(value, "debug") == 0)
+        *out = (int)LOG_DEBUG;
+    else if (strcmp(value, "trace") == 0)
+        *out = (int)LOG_TRACE;
+    else
+        return -1;
+
+    return 0;
+}
+
+static int add_or_set_int(ConfigLayer *layer, const char *key, int value)
+{
+    ConfigValue *existing = config_layer_get_value(layer, key);
+    if (!existing)
     {
-        if (layer->values[i].key && strcmp(layer->values[i].key, key) == 0)
-            return &layer->values[i];
+        if (config_layer_add_value(layer, key, CONFIG_TYPE_INT) != 0)
+            return -1;
+        existing = config_layer_get_value(layer, key);
+    }
+    config_value_set_int(existing, value);
+    return 0;
+}
+
+static int add_or_set_bool(ConfigLayer *layer, const char *key, bool value)
+{
+    ConfigValue *existing = config_layer_get_value(layer, key);
+    if (!existing)
+    {
+        if (config_layer_add_value(layer, key, CONFIG_TYPE_BOOL) != 0)
+            return -1;
+        existing = config_layer_get_value(layer, key);
+    }
+    config_value_set_bool(existing, value);
+    return 0;
+}
+
+static int add_or_set_string(ConfigLayer *layer, const char *key, const char *value)
+{
+    ConfigValue *existing = config_layer_get_value(layer, key);
+    if (!existing)
+    {
+        if (config_layer_add_value(layer, key, CONFIG_TYPE_STRING) != 0)
+            return -1;
+        existing = config_layer_get_value(layer, key);
+    }
+    config_value_set_string(existing, value);
+    return existing->value.string_value || !value ? 0 : -1;
+}
+
+static int append_indexed_string(ConfigLayer *layer, const char *count_key,
+                                 const char *item_prefix, const char *value,
+                                 int max_items)
+{
+    int count = 0;
+    ConfigValue *count_val = config_layer_get_value(layer, count_key);
+    if (count_val)
+        count = count_val->value.int_value;
+
+    if (count >= max_items)
+        return -1;
+
+    char key[64];
+    int n = snprintf(key, sizeof(key), "%s_%d", item_prefix, count);
+    if (n < 0 || (size_t)n >= sizeof(key))
+        return -1;
+
+    if (add_or_set_string(layer, key, value) != 0)
+        return -1;
+    return add_or_set_int(layer, count_key, count + 1);
+}
+
+static int split_list_option(ConfigLayer *layer, int argc, char *argv[], int *index,
+                             const char *count_key, const char *item_prefix,
+                             int max_items)
+{
+    int i = *index + 1;
+    int added = 0;
+    while (i < argc && argv[i][0] != '-')
+    {
+        if (append_indexed_string(layer, count_key, item_prefix, argv[i], max_items) != 0)
+            return -1;
+        added++;
+        i++;
     }
 
-    return NULL;
+    if (added == 0)
+        return -1;
+
+    *index = i - 1;
+    return 0;
+}
+
+static int parse_listen_value(const char *listen, char **host_out, int *port_out)
+{
+    if (!listen || !host_out || !port_out)
+        return -1;
+
+    const char *colon = strrchr(listen, ':');
+    if (!colon || colon == listen || colon[1] == '\0')
+        return -1;
+
+    size_t host_len = (size_t)(colon - listen);
+    char *host = malloc(host_len + 1);
+    if (!host)
+        return -1;
+    memcpy(host, listen, host_len);
+    host[host_len] = '\0';
+
+    int port = 0;
+    if (parse_positive_int(colon + 1, 1, 65535, &port) != 0)
+    {
+        free(host);
+        return -1;
+    }
+
+    *host_out = host;
+    *port_out = port;
+    return 0;
+}
+
+void resolved_config_cleanup(ResolvedConfig *config)
+{
+    if (!config)
+        return;
+
+    free(config->input_directory);
+    free(config->output_file);
+    for (int i = 0; i < config->exclude_count; i++)
+        free(config->exclude_patterns[i]);
+    free(config->exclude_patterns);
+    for (int i = 0; i < config->include_count; i++)
+        free(config->include_patterns[i]);
+    free(config->include_patterns);
+    free(config->listen_host);
+    for (int i = 0; i < config->allow_root_count; i++)
+        free(config->allow_roots[i]);
+    free(config->allow_roots);
+    free(config->auth_token);
+    memset(config, 0, sizeof(*config));
 }
 
 ConfigManager *config_manager_create(void)
@@ -109,46 +228,10 @@ void config_manager_destroy(ConfigManager *manager)
         return;
 
     pthread_mutex_lock(&manager->mutex);
-
-    // Free all layers
     for (int i = 0; i < manager->layer_count; i++)
-    {
         config_layer_cleanup(&manager->layers[i]);
-    }
-
-    // Free resolved config
-    if (manager->resolved)
-    {
-        free(manager->resolved->output_format);
-        free(manager->resolved->input_directory);
-        free(manager->resolved->output_file);
-        for (int i = 0; i < manager->resolved->exclude_count; i++)
-        {
-            free(manager->resolved->exclude_patterns[i]);
-        }
-        free(manager->resolved->exclude_patterns);
-
-        for (int i = 0; i < manager->resolved->include_count; i++)
-        {
-            free(manager->resolved->include_patterns[i]);
-        }
-        free(manager->resolved->include_patterns);
-
-        // Free plugin configurations
-        for (int i = 0; i < manager->resolved->plugin_count; i++)
-        {
-            free(manager->resolved->plugins[i].path);
-            for (int j = 0; j < manager->resolved->plugins[i].parameter_count; j++)
-            {
-                free(manager->resolved->plugins[i].parameters[j]);
-            }
-            free(manager->resolved->plugins[i].parameters);
-        }
-        free(manager->resolved->plugins);
-
-        free(manager->resolved);
-    }
-
+    resolved_config_cleanup(manager->resolved);
+    free(manager->resolved);
     pthread_mutex_unlock(&manager->mutex);
     pthread_mutex_destroy(&manager->mutex);
     free(manager);
@@ -156,11 +239,10 @@ void config_manager_destroy(ConfigManager *manager)
 
 int config_load_defaults(ConfigManager *manager)
 {
-    if (!manager)
+    if (!manager || manager->layer_count >= MAX_CONFIG_LAYERS)
         return -1;
 
     pthread_mutex_lock(&manager->mutex);
-
     ConfigLayer *layer = &manager->layers[manager->layer_count];
     if (config_layer_init(layer, CONFIG_SOURCE_DEFAULTS, 0) != 0)
     {
@@ -168,56 +250,22 @@ int config_load_defaults(ConfigManager *manager)
         return -1;
     }
 
-    // Use stack allocation pattern - much safer and clearer
-    struct
+    int ok = 0;
+    ok |= add_or_set_int(layer, "mode", (int)FCONCAT_MODE_BATCH);
+    ok |= add_or_set_int(layer, "binary_handling", (int)BINARY_SKIP);
+    ok |= add_or_set_int(layer, "symlink_handling", (int)SYMLINK_SKIP);
+    ok |= add_or_set_bool(layer, "show_size", false);
+    ok |= add_or_set_bool(layer, "verbose", false);
+    ok |= add_or_set_int(layer, "log_level", (int)LOG_INFO);
+    ok |= add_or_set_string(layer, "listen", "127.0.0.1:8080");
+    ok |= add_or_set_int(layer, "server_workers", DEFAULT_SERVER_WORKERS);
+    ok |= add_or_set_int(layer, "server_queue_size", DEFAULT_SERVER_QUEUE);
+
+    if (ok != 0)
     {
-        const char *key;
-        ConfigType type;
-        union
-        {
-            int int_val;
-            bool bool_val;
-            const char *str_val;
-        } value;
-    } defaults[] = {
-        {"binary_handling", CONFIG_TYPE_INT, {.int_val = BINARY_SKIP}},
-        {"symlink_handling", CONFIG_TYPE_INT, {.int_val = SYMLINK_SKIP}},
-        {"show_size", CONFIG_TYPE_BOOL, {.bool_val = false}},
-        {"verbose", CONFIG_TYPE_BOOL, {.bool_val = false}},
-        {"interactive", CONFIG_TYPE_BOOL, {.bool_val = false}},
-        {"output_format", CONFIG_TYPE_STRING, {.str_val = "text"}},
-        {"log_level", CONFIG_TYPE_INT, {.int_val = (int)LOG_INFO}},
-    };
-
-    for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++)
-    {
-        if (config_layer_add_value(layer, defaults[i].key, defaults[i].type) != 0)
-        {
-            pthread_mutex_unlock(&manager->mutex);
-            return -1;
-        }
-
-        ConfigValue *value = config_layer_get_value(layer, defaults[i].key);
-        if (!value)
-        {
-            pthread_mutex_unlock(&manager->mutex);
-            return -1;
-        }
-
-        switch (defaults[i].type)
-        {
-        case CONFIG_TYPE_INT:
-            config_value_set_int(value, defaults[i].value.int_val);
-            break;
-        case CONFIG_TYPE_BOOL:
-            config_value_set_bool(value, defaults[i].value.bool_val);
-            break;
-        case CONFIG_TYPE_STRING:
-            config_value_set_string(value, defaults[i].value.str_val);
-            break;
-        default:
-            break;
-        }
+        config_layer_cleanup(layer);
+        pthread_mutex_unlock(&manager->mutex);
+        return -1;
     }
 
     manager->layer_count++;
@@ -227,11 +275,10 @@ int config_load_defaults(ConfigManager *manager)
 
 int config_load_cli(ConfigManager *manager, int argc, char *argv[])
 {
-    if (!manager || argc < 3)
+    if (!manager || argc < 2 || manager->layer_count >= MAX_CONFIG_LAYERS)
         return -1;
 
     pthread_mutex_lock(&manager->mutex);
-
     ConfigLayer *layer = &manager->layers[manager->layer_count];
     if (config_layer_init(layer, CONFIG_SOURCE_CLI, 100) != 0)
     {
@@ -239,395 +286,166 @@ int config_load_cli(ConfigManager *manager, int argc, char *argv[])
         return -1;
     }
 
-    // Parse basic arguments
-    if (config_layer_add_value(layer, "input_directory", CONFIG_TYPE_STRING) != 0)
+    int result = 0;
+    if (strcmp(argv[1], "--serve") == 0)
     {
-        pthread_mutex_unlock(&manager->mutex);
-        return -1;
-    }
-    ConfigValue *input_val = config_layer_get_value(layer, "input_directory");
-    config_value_set_string(input_val, argv[1]);
-
-    if (config_layer_add_value(layer, "output_file", CONFIG_TYPE_STRING) != 0)
-    {
-        pthread_mutex_unlock(&manager->mutex);
-        return -1;
-    }
-    ConfigValue *output_val = config_layer_get_value(layer, "output_file");
-    config_value_set_string(output_val, argv[2]);
-
-    // Parse options
-    for (int i = 3; i < argc; i++)
-    {
-        if (strcmp(argv[i], "--exclude") == 0)
+        result |= add_or_set_int(layer, "mode", (int)FCONCAT_MODE_SERVER);
+        for (int i = 2; result == 0 && i < argc; i++)
         {
-            // Process all exclude patterns after --exclude
-            i++; // Move to first pattern
-            int exclude_count = 0;
-
-            // Count patterns
-            for (int j = i; j < argc && argv[j][0] != '-'; j++)
+            if (strcmp(argv[i], "--listen") == 0 && i + 1 < argc)
             {
-                exclude_count++;
+                result |= add_or_set_string(layer, "listen", argv[++i]);
             }
-
-            if (exclude_count > 0)
+            else if (strcmp(argv[i], "--allow-root") == 0 && i + 1 < argc)
             {
-                // Store exclude count
-                if (config_layer_add_value(layer, "exclude_count", CONFIG_TYPE_INT) != 0)
-                {
-                    pthread_mutex_unlock(&manager->mutex);
-                    return -1;
-                }
-                ConfigValue *count_val = config_layer_get_value(layer, "exclude_count");
-                config_value_set_int(count_val, exclude_count);
-
-                // Store each pattern
-                for (int j = 0; j < exclude_count; j++)
-                {
-                    char pattern_key[64];
-                    int ret = snprintf(pattern_key, sizeof(pattern_key), "exclude_pattern_%d", j);
-                    if (ret < 0 || ret >= (int)sizeof(pattern_key))
-                    {
-                        pthread_mutex_unlock(&manager->mutex);
-                        return -1;
-                    }
-
-                    if (config_layer_add_value(layer, pattern_key, CONFIG_TYPE_STRING) != 0)
-                    {
-                        pthread_mutex_unlock(&manager->mutex);
-                        return -1;
-                    }
-                    ConfigValue *pattern_val = config_layer_get_value(layer, pattern_key);
-                    config_value_set_string(pattern_val, argv[i + j]);
-                }
-
-                i += exclude_count - 1; // Skip processed patterns
+                result |= append_indexed_string(layer, "allow_root_count", "allow_root", argv[++i], MAX_ALLOW_ROOTS);
             }
-        }
-        // Include pattern processing
-        else if (strcmp(argv[i], "--include") == 0)
-        {
-            // Process all include patterns after --include
-            i++; // Move to first pattern
-            int include_count = 0;
-
-            // Count patterns
-            for (int j = i; j < argc && argv[j][0] != '-'; j++)
+            else if (strcmp(argv[i], "--workers") == 0 && i + 1 < argc)
             {
-                include_count++;
+                int workers = 0;
+                result |= parse_positive_int(argv[++i], 1, 256, &workers);
+                result |= add_or_set_int(layer, "server_workers", workers);
             }
-
-            if (include_count > 0)
+            else if (strcmp(argv[i], "--queue") == 0 && i + 1 < argc)
             {
-                // Store include count
-                if (config_layer_add_value(layer, "include_count", CONFIG_TYPE_INT) != 0)
-                {
-                    pthread_mutex_unlock(&manager->mutex);
-                    return -1;
-                }
-                ConfigValue *count_val = config_layer_get_value(layer, "include_count");
-                config_value_set_int(count_val, include_count);
-
-                // Store each pattern
-                for (int j = 0; j < include_count; j++)
-                {
-                    char pattern_key[64];
-                    int ret = snprintf(pattern_key, sizeof(pattern_key), "include_pattern_%d", j);
-                    if (ret < 0 || ret >= (int)sizeof(pattern_key))
-                    {
-                        pthread_mutex_unlock(&manager->mutex);
-                        return -1;
-                    }
-
-                    if (config_layer_add_value(layer, pattern_key, CONFIG_TYPE_STRING) != 0)
-                    {
-                        pthread_mutex_unlock(&manager->mutex);
-                        return -1;
-                    }
-                    ConfigValue *pattern_val = config_layer_get_value(layer, pattern_key);
-                    config_value_set_string(pattern_val, argv[i + j]);
-                }
-
-                i += include_count - 1; // Skip processed patterns
+                int queue_size = 0;
+                result |= parse_positive_int(argv[++i], 1, 4096, &queue_size);
+                result |= add_or_set_int(layer, "server_queue_size", queue_size);
             }
-        }
-        else if (strcmp(argv[i], "--show-size") == 0 || strcmp(argv[i], "-s") == 0)
-        {
-            if (config_layer_add_value(layer, "show_size", CONFIG_TYPE_BOOL) != 0)
+            else if (strcmp(argv[i], "--auth-token") == 0 && i + 1 < argc)
             {
-                pthread_mutex_unlock(&manager->mutex);
-                return -1;
+                result |= add_or_set_string(layer, "auth_token", argv[++i]);
             }
-            ConfigValue *val = config_layer_get_value(layer, "show_size");
-            config_value_set_bool(val, true);
-        }
-        else if (strcmp(argv[i], "--verbose") == 0 || strcmp(argv[i], "-v") == 0)
-        {
-            if (config_layer_add_value(layer, "verbose", CONFIG_TYPE_BOOL) != 0)
+            else if (strcmp(argv[i], "--verbose") == 0 || strcmp(argv[i], "-v") == 0)
             {
-                pthread_mutex_unlock(&manager->mutex);
-                return -1;
+                result |= add_or_set_bool(layer, "verbose", true);
+                result |= add_or_set_int(layer, "log_level", (int)LOG_DEBUG);
             }
-            ConfigValue *val = config_layer_get_value(layer, "verbose");
-            config_value_set_bool(val, true);
-
-            // Set log level to DEBUG for verbose mode
-            if (config_layer_add_value(layer, "log_level", CONFIG_TYPE_INT) != 0)
+            else if (strcmp(argv[i], "--log-level") == 0 && i + 1 < argc)
             {
-                pthread_mutex_unlock(&manager->mutex);
-                return -1;
-            }
-            ConfigValue *log_val = config_layer_get_value(layer, "log_level");
-            config_value_set_int(log_val, (int)LOG_DEBUG);
-        }
-        else if (strcmp(argv[i], "--log-level") == 0 && i + 1 < argc)
-        {
-            if (config_layer_add_value(layer, "log_level", CONFIG_TYPE_INT) != 0)
-            {
-                pthread_mutex_unlock(&manager->mutex);
-                return -1;
-            }
-            ConfigValue *val = config_layer_get_value(layer, "log_level");
-            i++;
-
-            // Parse log level
-            int log_level = (int)LOG_INFO; // Default
-            if (strcmp(argv[i], "error") == 0)
-                log_level = (int)LOG_ERROR;
-            else if (strcmp(argv[i], "warning") == 0)
-                log_level = (int)LOG_WARNING;
-            else if (strcmp(argv[i], "info") == 0)
-                log_level = (int)LOG_INFO;
-            else if (strcmp(argv[i], "debug") == 0)
-                log_level = (int)LOG_DEBUG;
-            else if (strcmp(argv[i], "trace") == 0)
-                log_level = (int)LOG_TRACE;
-
-            config_value_set_int(val, log_level);
-        }
-        else if (strcmp(argv[i], "--interactive") == 0)
-        {
-            if (config_layer_add_value(layer, "interactive", CONFIG_TYPE_BOOL) != 0)
-            {
-                pthread_mutex_unlock(&manager->mutex);
-                return -1;
-            }
-            ConfigValue *val = config_layer_get_value(layer, "interactive");
-            config_value_set_bool(val, true);
-        }
-        else if (strcmp(argv[i], "--format") == 0 && i + 1 < argc)
-        {
-            if (config_layer_add_value(layer, "output_format", CONFIG_TYPE_STRING) != 0)
-            {
-                pthread_mutex_unlock(&manager->mutex);
-                return -1;
-            }
-            ConfigValue *val = config_layer_get_value(layer, "output_format");
-            config_value_set_string(val, argv[++i]);
-        }
-        else if (strcmp(argv[i], "--binary-skip") == 0)
-        {
-            if (config_layer_add_value(layer, "binary_handling", CONFIG_TYPE_INT) != 0)
-            {
-                pthread_mutex_unlock(&manager->mutex);
-                return -1;
-            }
-            ConfigValue *val = config_layer_get_value(layer, "binary_handling");
-            config_value_set_int(val, BINARY_SKIP);
-        }
-        else if (strcmp(argv[i], "--binary-include") == 0)
-        {
-            if (config_layer_add_value(layer, "binary_handling", CONFIG_TYPE_INT) != 0)
-            {
-                pthread_mutex_unlock(&manager->mutex);
-                return -1;
-            }
-            ConfigValue *val = config_layer_get_value(layer, "binary_handling");
-            config_value_set_int(val, BINARY_INCLUDE);
-        }
-        else if (strcmp(argv[i], "--binary-placeholder") == 0)
-        {
-            if (config_layer_add_value(layer, "binary_handling", CONFIG_TYPE_INT) != 0)
-            {
-                pthread_mutex_unlock(&manager->mutex);
-                return -1;
-            }
-            ConfigValue *val = config_layer_get_value(layer, "binary_handling");
-            config_value_set_int(val, BINARY_PLACEHOLDER);
-        }
-        else if (strcmp(argv[i], "--symlinks") == 0 && i + 1 < argc)
-        {
-            if (config_layer_add_value(layer, "symlink_handling", CONFIG_TYPE_INT) != 0)
-            {
-                pthread_mutex_unlock(&manager->mutex);
-                return -1;
-            }
-            ConfigValue *val = config_layer_get_value(layer, "symlink_handling");
-            i++;
-            if (strcmp(argv[i], "skip") == 0)
-            {
-                config_value_set_int(val, SYMLINK_SKIP);
-            }
-            else if (strcmp(argv[i], "follow") == 0)
-            {
-                config_value_set_int(val, SYMLINK_FOLLOW);
-            }
-            else if (strcmp(argv[i], "include") == 0)
-            {
-                config_value_set_int(val, SYMLINK_INCLUDE);
-            }
-            else if (strcmp(argv[i], "placeholder") == 0)
-            {
-                config_value_set_int(val, SYMLINK_PLACEHOLDER);
-            }
-        }
-        else if (strcmp(argv[i], "--plugin") == 0 && i + 1 < argc)
-        {
-            // Get current plugin count
-            int plugin_count = config_get_int(manager, "plugin_count");
-
-            // Add plugin count if it doesn't exist
-            if (plugin_count == 0)
-            {
-                if (config_layer_add_value(layer, "plugin_count", CONFIG_TYPE_INT) != 0)
-                {
-                    pthread_mutex_unlock(&manager->mutex);
-                    return -1;
-                }
-                ConfigValue *count_val = config_layer_get_value(layer, "plugin_count");
-                config_value_set_int(count_val, 1);
-                plugin_count = 1;
+                int level = 0;
+                result |= parse_log_level(argv[++i], &level);
+                result |= add_or_set_int(layer, "log_level", level);
             }
             else
             {
-                // Increment plugin count
-                ConfigValue *count_val = config_layer_get_value(layer, "plugin_count");
-                if (count_val)
-                {
-                    config_value_set_int(count_val, plugin_count + 1);
-                    plugin_count++;
-                }
-                else
-                {
-                    // Create plugin count if it doesn't exist
-                    if (config_layer_add_value(layer, "plugin_count", CONFIG_TYPE_INT) != 0)
-                    {
-                        pthread_mutex_unlock(&manager->mutex);
-                        return -1;
-                    }
-                    ConfigValue *count_val = config_layer_get_value(layer, "plugin_count");
-                    config_value_set_int(count_val, 1);
-                    plugin_count = 1;
-                }
+                result = -1;
             }
-
-            // Parse plugin specification: path[:param1=value1,param2=value2,...]
-            i++; // Move to plugin spec
-            char *plugin_spec = strdup(argv[i]);
-            if (!plugin_spec)
-            {
-                pthread_mutex_unlock(&manager->mutex);
-                return -1;
-            }
-
-            // Split path and parameters
-            char *path_part = plugin_spec;
-            char *params_part = strchr(plugin_spec, ':');
-            if (params_part)
-            {
-                *params_part = '\0'; // Terminate path part
-                params_part++;       // Move to parameters part
-            }
-
-            // Store plugin path
-            char plugin_path_key[64];
-            int ret = snprintf(plugin_path_key, sizeof(plugin_path_key), "plugin_path_%d", plugin_count - 1);
-            if (ret < 0 || ret >= (int)sizeof(plugin_path_key))
-            {
-                free(plugin_spec);
-                pthread_mutex_unlock(&manager->mutex);
-                return -1;
-            }
-
-            if (config_layer_add_value(layer, plugin_path_key, CONFIG_TYPE_STRING) != 0)
-            {
-                free(plugin_spec);
-                pthread_mutex_unlock(&manager->mutex);
-                return -1;
-            }
-            ConfigValue *path_val = config_layer_get_value(layer, plugin_path_key);
-            config_value_set_string(path_val, path_part);
-
-            // Parse and store parameters if present
-            if (params_part && strlen(params_part) > 0)
-            {
-                char param_count_key[64];
-                ret = snprintf(param_count_key, sizeof(param_count_key), "plugin_param_count_%d", plugin_count - 1);
-                if (ret >= 0 && ret < (int)sizeof(param_count_key))
-                {
-                    // Count parameters
-                    int param_count = 0;
-                    char *params_copy = strdup(params_part);
-                    if (params_copy)
-                    {
-                        char *param = strtok(params_copy, ",");
-                        while (param && param_count < MAX_PLUGIN_PARAMS)
-                        {
-                            param_count++;
-                            param = strtok(NULL, ",");
-                        }
-                        free(params_copy);
-
-                        // Store parameter count
-                        if (config_layer_add_value(layer, param_count_key, CONFIG_TYPE_INT) != 0)
-                        {
-                            free(plugin_spec);
-                            pthread_mutex_unlock(&manager->mutex);
-                            return -1;
-                        }
-                        ConfigValue *param_count_val = config_layer_get_value(layer, param_count_key);
-                        config_value_set_int(param_count_val, param_count);
-
-                        // Store each parameter
-                        params_copy = strdup(params_part);
-                        if (params_copy)
-                        {
-                            char *param = strtok(params_copy, ",");
-                            int param_idx = 0;
-                            while (param && param_idx < param_count)
-                            {
-                                char param_key[64];
-                                ret = snprintf(param_key, sizeof(param_key), "plugin_param_%d_%d", plugin_count - 1, param_idx);
-                                if (ret >= 0 && ret < (int)sizeof(param_key))
-                                {
-                                    if (config_layer_add_value(layer, param_key, CONFIG_TYPE_STRING) != 0)
-                                    {
-                                        free(params_copy);
-                                        free(plugin_spec);
-                                        pthread_mutex_unlock(&manager->mutex);
-                                        return -1;
-                                    }
-                                    ConfigValue *param_val = config_layer_get_value(layer, param_key);
-                                    config_value_set_string(param_val, param);
-                                }
-                                param = strtok(NULL, ",");
-                                param_idx++;
-                            }
-                            free(params_copy);
-                        }
-                    }
-                }
-            }
-
-            free(plugin_spec);
         }
-        // Add more options as needed
+    }
+    else if (argc >= 3)
+    {
+        result |= add_or_set_int(layer, "mode", (int)FCONCAT_MODE_BATCH);
+        result |= add_or_set_string(layer, "input_directory", argv[1]);
+        result |= add_or_set_string(layer, "output_file", argv[2]);
+
+        for (int i = 3; result == 0 && i < argc; i++)
+        {
+            if (strcmp(argv[i], "--include") == 0)
+            {
+                result |= split_list_option(layer, argc, argv, &i, "include_count", "include_pattern", MAX_INCLUDES);
+            }
+            else if (strcmp(argv[i], "--exclude") == 0)
+            {
+                result |= split_list_option(layer, argc, argv, &i, "exclude_count", "exclude_pattern", MAX_EXCLUDES);
+            }
+            else if (strcmp(argv[i], "--show-size") == 0 || strcmp(argv[i], "-s") == 0)
+            {
+                result |= add_or_set_bool(layer, "show_size", true);
+            }
+            else if (strcmp(argv[i], "--verbose") == 0 || strcmp(argv[i], "-v") == 0)
+            {
+                result |= add_or_set_bool(layer, "verbose", true);
+                result |= add_or_set_int(layer, "log_level", (int)LOG_DEBUG);
+            }
+            else if (strcmp(argv[i], "--log-level") == 0 && i + 1 < argc)
+            {
+                int level = 0;
+                result |= parse_log_level(argv[++i], &level);
+                result |= add_or_set_int(layer, "log_level", level);
+            }
+            else if (strcmp(argv[i], "--binary-skip") == 0)
+            {
+                result |= add_or_set_int(layer, "binary_handling", (int)BINARY_SKIP);
+            }
+            else if (strcmp(argv[i], "--binary-include") == 0)
+            {
+                result |= add_or_set_int(layer, "binary_handling", (int)BINARY_INCLUDE);
+            }
+            else if (strcmp(argv[i], "--binary-placeholder") == 0)
+            {
+                result |= add_or_set_int(layer, "binary_handling", (int)BINARY_PLACEHOLDER);
+            }
+            else if (strcmp(argv[i], "--symlinks") == 0 && i + 1 < argc)
+            {
+                i++;
+                if (strcmp(argv[i], "skip") == 0)
+                    result |= add_or_set_int(layer, "symlink_handling", (int)SYMLINK_SKIP);
+                else if (strcmp(argv[i], "follow") == 0)
+                    result |= add_or_set_int(layer, "symlink_handling", (int)SYMLINK_FOLLOW);
+                else if (strcmp(argv[i], "include") == 0)
+                    result |= add_or_set_int(layer, "symlink_handling", (int)SYMLINK_INCLUDE);
+                else if (strcmp(argv[i], "placeholder") == 0)
+                    result |= add_or_set_int(layer, "symlink_handling", (int)SYMLINK_PLACEHOLDER);
+                else
+                    result = -1;
+            }
+            else
+            {
+                result = -1;
+            }
+        }
+    }
+    else
+    {
+        result = -1;
+    }
+
+    if (result != 0)
+    {
+        config_layer_cleanup(layer);
+        pthread_mutex_unlock(&manager->mutex);
+        return -1;
     }
 
     manager->layer_count++;
     pthread_mutex_unlock(&manager->mutex);
     return 0;
+}
+
+static char **resolve_string_array(ConfigManager *manager, const char *count_key,
+                                   const char *item_prefix, int *out_count)
+{
+    int count = config_get_int(manager, count_key);
+    *out_count = 0;
+    if (count <= 0)
+        return NULL;
+
+    char **items = calloc((size_t)count, sizeof(char *));
+    if (!items)
+        return NULL;
+
+    for (int i = 0; i < count; i++)
+    {
+        char key[64];
+        int n = snprintf(key, sizeof(key), "%s_%d", item_prefix, i);
+        if (n < 0 || (size_t)n >= sizeof(key))
+            goto fail;
+
+        const char *value = config_get_string(manager, key);
+        items[i] = strdup(value ? value : "");
+        if (!items[i])
+            goto fail;
+    }
+
+    *out_count = count;
+    return items;
+
+fail:
+    for (int i = 0; i < count; i++)
+        free(items[i]);
+    free(items);
+    return NULL;
 }
 
 ResolvedConfig *config_resolve(ConfigManager *manager)
@@ -636,244 +454,60 @@ ResolvedConfig *config_resolve(ConfigManager *manager)
         return NULL;
 
     pthread_mutex_lock(&manager->mutex);
-
     ResolvedConfig *config = manager->resolved;
+    resolved_config_cleanup(config);
 
-    // Resolve basic configuration
-    config->binary_handling = config_get_int(manager, "binary_handling");
-    config->symlink_handling = config_get_int(manager, "symlink_handling");
+    config->mode = (FconcatMode)config_get_int(manager, "mode");
+    config->binary_handling = (BinaryHandling)config_get_int(manager, "binary_handling");
+    config->symlink_handling = (SymlinkHandling)config_get_int(manager, "symlink_handling");
     config->show_size = config_get_bool(manager, "show_size");
     config->verbose = config_get_bool(manager, "verbose");
-    config->interactive = config_get_bool(manager, "interactive");
     config->log_level = config_get_int(manager, "log_level");
+    config->server_workers = config_get_int(manager, "server_workers");
+    config->server_queue_size = config_get_int(manager, "server_queue_size");
 
-    const char *format = config_get_string(manager, "output_format");
-    if (format)
+    const char *input = config_get_string(manager, "input_directory");
+    const char *output = config_get_string(manager, "output_file");
+    const char *token = config_get_string(manager, "auth_token");
+
+    if (input)
+        config->input_directory = strdup(input);
+    if (output)
+        config->output_file = strdup(output);
+    if (token)
+        config->auth_token = strdup(token);
+
+    config->include_patterns = resolve_string_array(manager, "include_count", "include_pattern", &config->include_count);
+    config->exclude_patterns = resolve_string_array(manager, "exclude_count", "exclude_pattern", &config->exclude_count);
+    config->allow_roots = resolve_string_array(manager, "allow_root_count", "allow_root", &config->allow_root_count);
+
+    const char *listen = config_get_string(manager, "listen");
+    if (parse_listen_value(listen ? listen : "127.0.0.1:8080", &config->listen_host, &config->listen_port) != 0)
     {
-        free(config->output_format);
-        config->output_format = strdup(format);
-        if (!config->output_format) {
-            pthread_mutex_unlock(&manager->mutex);
-            return NULL;  // Allocation failed - caller should use config_manager_destroy()
-        }
+        pthread_mutex_unlock(&manager->mutex);
+        return NULL;
     }
 
-    const char *input_dir = config_get_string(manager, "input_directory");
-    if (input_dir)
+    if ((input && !config->input_directory) || (output && !config->output_file) ||
+        (token && !config->auth_token) ||
+        (config_get_int(manager, "include_count") > 0 && !config->include_patterns) ||
+        (config_get_int(manager, "exclude_count") > 0 && !config->exclude_patterns) ||
+        (config_get_int(manager, "allow_root_count") > 0 && !config->allow_roots))
     {
-        free(config->input_directory);
-        config->input_directory = strdup(input_dir);
-        if (!config->input_directory) {
-            pthread_mutex_unlock(&manager->mutex);
-            return NULL;  // Allocation failed - caller should use config_manager_destroy()
-        }
+        pthread_mutex_unlock(&manager->mutex);
+        return NULL;
     }
 
-    const char *output_file = config_get_string(manager, "output_file");
-    if (output_file)
+    if (config->mode == FCONCAT_MODE_BATCH && (!config->input_directory || !config->output_file))
     {
-        free(config->output_file);
-        config->output_file = strdup(output_file);
-        if (!config->output_file) {
-            pthread_mutex_unlock(&manager->mutex);
-            return NULL;  // Allocation failed - caller should use config_manager_destroy()
-        }
+        pthread_mutex_unlock(&manager->mutex);
+        return NULL;
     }
 
-    // Resolve exclude patterns
-    int exclude_count = config_get_int(manager, "exclude_count");
-    if (exclude_count > 0)
+    if (config->mode == FCONCAT_MODE_SERVER && config->allow_root_count <= 0)
     {
-        // Free existing patterns
-        for (int i = 0; i < config->exclude_count; i++)
-        {
-            free(config->exclude_patterns[i]);
-        }
-        free(config->exclude_patterns);
-
-        config->exclude_patterns = malloc(exclude_count * sizeof(char *));
-        if (config->exclude_patterns)
-        {
-            config->exclude_count = exclude_count;
-
-            for (int i = 0; i < exclude_count; i++)
-            {
-                char pattern_key[64];
-                int ret = snprintf(pattern_key, sizeof(pattern_key), "exclude_pattern_%d", i);
-                if (ret < 0 || ret >= (int)sizeof(pattern_key))
-                {
-                    config->exclude_patterns[i] = strdup("");
-                    if (!config->exclude_patterns[i]) {
-                        // Truncate pattern list on allocation failure
-                        config->exclude_count = i;
-                        break;
-                    }
-                    continue;
-                }
-
-                const char *pattern = config_get_string(manager, pattern_key);
-                if (pattern)
-                {
-                    config->exclude_patterns[i] = strdup(pattern);
-                }
-                else
-                {
-                    config->exclude_patterns[i] = strdup("");
-                }
-                if (!config->exclude_patterns[i]) {
-                    // Truncate pattern list on allocation failure
-                    config->exclude_count = i;
-                    break;
-                }
-            }
-        }
-        else
-        {
-            config->exclude_count = 0;
-        }
-    }
-
-    // Resolve include patterns
-    int include_count = config_get_int(manager, "include_count");
-    if (include_count > 0)
-    {
-        // Free existing patterns
-        for (int i = 0; i < config->include_count; i++)
-        {
-            free(config->include_patterns[i]);
-        }
-        free(config->include_patterns);
-
-        config->include_patterns = malloc(include_count * sizeof(char *));
-        if (config->include_patterns)
-        {
-            config->include_count = include_count;
-
-            for (int i = 0; i < include_count; i++)
-            {
-                char pattern_key[64];
-                int ret = snprintf(pattern_key, sizeof(pattern_key), "include_pattern_%d", i);
-                if (ret < 0 || ret >= (int)sizeof(pattern_key))
-                {
-                    config->include_patterns[i] = strdup("");
-                    if (!config->include_patterns[i]) {
-                        // Truncate pattern list on allocation failure
-                        config->include_count = i;
-                        break;
-                    }
-                    continue;
-                }
-
-                const char *pattern = config_get_string(manager, pattern_key);
-                if (pattern)
-                {
-                    config->include_patterns[i] = strdup(pattern);
-                }
-                else
-                {
-                    config->include_patterns[i] = strdup("");
-                }
-                if (!config->include_patterns[i]) {
-                    // Truncate pattern list on allocation failure
-                    config->include_count = i;
-                    break;
-                }
-            }
-        }
-        else
-        {
-            config->include_count = 0;
-        }
-    }
-
-    // Resolve plugin configurations
-    int plugin_count = config_get_int(manager, "plugin_count");
-    if (plugin_count > 0)
-    {
-        // Free existing plugin configurations
-        for (int i = 0; i < config->plugin_count; i++)
-        {
-            free(config->plugins[i].path);
-            for (int j = 0; j < config->plugins[i].parameter_count; j++)
-            {
-                free(config->plugins[i].parameters[j]);
-            }
-            free(config->plugins[i].parameters);
-        }
-        free(config->plugins);
-
-        config->plugins = calloc(plugin_count, sizeof(PluginConfig));
-        if (config->plugins)
-        {
-            config->plugin_count = plugin_count;
-
-            for (int i = 0; i < plugin_count; i++)
-            {
-                // Get plugin path
-                char plugin_path_key[64];
-                int ret = snprintf(plugin_path_key, sizeof(plugin_path_key), "plugin_path_%d", i);
-                if (ret >= 0 && ret < (int)sizeof(plugin_path_key))
-                {
-                    const char *plugin_path = config_get_string(manager, plugin_path_key);
-                    if (plugin_path)
-                    {
-                        config->plugins[i].path = strdup(plugin_path);
-                    }
-                }
-
-                // Get plugin parameters
-                char param_count_key[64];
-                ret = snprintf(param_count_key, sizeof(param_count_key), "plugin_param_count_%d", i);
-                if (ret >= 0 && ret < (int)sizeof(param_count_key))
-                {
-                    int param_count = config_get_int(manager, param_count_key);
-                    if (param_count > 0)
-                    {
-                        config->plugins[i].parameters = malloc(param_count * sizeof(char *));
-                        if (config->plugins[i].parameters)
-                        {
-                            config->plugins[i].parameter_count = param_count;
-
-                            for (int j = 0; j < param_count; j++)
-                            {
-                                char param_key[64];
-                                ret = snprintf(param_key, sizeof(param_key), "plugin_param_%d_%d", i, j);
-                                if (ret >= 0 && ret < (int)sizeof(param_key))
-                                {
-                                    const char *param = config_get_string(manager, param_key);
-                                    if (param)
-                                    {
-                                        config->plugins[i].parameters[j] = strdup(param);
-                                    }
-                                    else
-                                    {
-                                        config->plugins[i].parameters[j] = strdup("");
-                                    }
-                                }
-                                else
-                                {
-                                    config->plugins[i].parameters[j] = strdup("");
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        else
-        {
-            config->plugin_count = 0;
-        }
-    }
-    else
-    {
-        // No plugins specified, make sure plugin_count is 0
-        config->plugin_count = 0;
-        if (config->plugins)
-        {
-            free(config->plugins);
-            config->plugins = NULL;
-        }
+        pthread_mutex_unlock(&manager->mutex);
+        return NULL;
     }
 
     pthread_mutex_unlock(&manager->mutex);
@@ -885,17 +519,14 @@ const char *config_get_string(ConfigManager *manager, const char *key)
     if (!manager || !key)
         return NULL;
 
-    // Search from highest to lowest priority
     for (int i = manager->layer_count - 1; i >= 0; i--)
     {
         ConfigLayer *layer = &manager->layers[i];
         for (int j = 0; j < layer->value_count; j++)
         {
-            ConfigValue *val = &layer->values[j];
-            if (val->key && strcmp(val->key, key) == 0 && val->type == CONFIG_TYPE_STRING)
-            {
-                return val->value.string_value;
-            }
+            ConfigValue *value = &layer->values[j];
+            if (value->key && strcmp(value->key, key) == 0 && value->type == CONFIG_TYPE_STRING)
+                return value->value.string_value;
         }
     }
 
@@ -907,17 +538,14 @@ int config_get_int(ConfigManager *manager, const char *key)
     if (!manager || !key)
         return 0;
 
-    // Search from highest to lowest priority
     for (int i = manager->layer_count - 1; i >= 0; i--)
     {
         ConfigLayer *layer = &manager->layers[i];
         for (int j = 0; j < layer->value_count; j++)
         {
-            ConfigValue *val = &layer->values[j];
-            if (val->key && strcmp(val->key, key) == 0 && val->type == CONFIG_TYPE_INT)
-            {
-                return val->value.int_value;
-            }
+            ConfigValue *value = &layer->values[j];
+            if (value->key && strcmp(value->key, key) == 0 && value->type == CONFIG_TYPE_INT)
+                return value->value.int_value;
         }
     }
 
@@ -929,52 +557,30 @@ bool config_get_bool(ConfigManager *manager, const char *key)
     if (!manager || !key)
         return false;
 
-    // Search from highest to lowest priority
     for (int i = manager->layer_count - 1; i >= 0; i--)
     {
         ConfigLayer *layer = &manager->layers[i];
         for (int j = 0; j < layer->value_count; j++)
         {
-            ConfigValue *val = &layer->values[j];
-            if (val->key && strcmp(val->key, key) == 0 && val->type == CONFIG_TYPE_BOOL)
-            {
-                return val->value.bool_value;
-            }
+            ConfigValue *value = &layer->values[j];
+            if (value->key && strcmp(value->key, key) == 0 && value->type == CONFIG_TYPE_BOOL)
+                return value->value.bool_value;
         }
     }
 
     return false;
 }
 
-// Configuration value functions
 int config_value_init(ConfigValue *value, const char *key, ConfigType type)
 {
     if (!value || !key)
         return -1;
 
+    memset(value, 0, sizeof(*value));
     value->key = strdup(key);
     if (!value->key)
         return -1;
-
     value->type = type;
-
-    // Initialize the value union
-    switch (type)
-    {
-    case CONFIG_TYPE_STRING:
-        value->value.string_value = NULL;
-        break;
-    case CONFIG_TYPE_INT:
-        value->value.int_value = 0;
-        break;
-    case CONFIG_TYPE_BOOL:
-        value->value.bool_value = false;
-        break;
-    case CONFIG_TYPE_FLOAT:
-        value->value.float_value = 0.0;
-        break;
-    }
-
     return 0;
 }
 
@@ -984,13 +590,9 @@ void config_value_cleanup(ConfigValue *value)
         return;
 
     free(value->key);
-    value->key = NULL;
-
     if (value->type == CONFIG_TYPE_STRING)
-    {
         free(value->value.string_value);
-        value->value.string_value = NULL;
-    }
+    memset(value, 0, sizeof(*value));
 }
 
 void config_value_set_string(ConfigValue *value, const char *str)
@@ -1004,24 +606,49 @@ void config_value_set_string(ConfigValue *value, const char *str)
 
 void config_value_set_int(ConfigValue *value, int val)
 {
-    if (!value || value->type != CONFIG_TYPE_INT)
-        return;
-
-    value->value.int_value = val;
+    if (value && value->type == CONFIG_TYPE_INT)
+        value->value.int_value = val;
 }
 
 void config_value_set_bool(ConfigValue *value, bool val)
 {
-    if (!value || value->type != CONFIG_TYPE_BOOL)
-        return;
-
-    value->value.bool_value = val;
+    if (value && value->type == CONFIG_TYPE_BOOL)
+        value->value.bool_value = val;
 }
 
-void config_value_set_float(ConfigValue *value, double val)
+int config_layer_add_value(ConfigLayer *layer, const char *key, ConfigType type)
 {
-    if (!value || value->type != CONFIG_TYPE_FLOAT)
-        return;
+    if (!layer || !key)
+        return -1;
 
-    value->value.float_value = val;
+    if (layer->value_count >= layer->value_capacity)
+    {
+        int new_capacity = layer->value_capacity > 0 ? layer->value_capacity * 2 : 32;
+        ConfigValue *new_values = realloc(layer->values, (size_t)new_capacity * sizeof(ConfigValue));
+        if (!new_values)
+            return -1;
+        memset(new_values + layer->value_capacity, 0,
+               (size_t)(new_capacity - layer->value_capacity) * sizeof(ConfigValue));
+        layer->values = new_values;
+        layer->value_capacity = new_capacity;
+    }
+
+    if (config_value_init(&layer->values[layer->value_count], key, type) != 0)
+        return -1;
+    layer->value_count++;
+    return 0;
+}
+
+ConfigValue *config_layer_get_value(ConfigLayer *layer, const char *key)
+{
+    if (!layer || !key)
+        return NULL;
+
+    for (int i = 0; i < layer->value_count; i++)
+    {
+        if (layer->values[i].key && strcmp(layer->values[i].key, key) == 0)
+            return &layer->values[i];
+    }
+
+    return NULL;
 }

@@ -14,16 +14,16 @@ extern "C"
 
 // Configuration constants
 #define MAX_CONFIG_LAYERS 8
-#define MAX_PLUGINS 32
 #define MAX_EXCLUDES 1000
 #define MAX_INCLUDES 1000
 #define MAX_BUFFER_SIZE 1024 * 4
 #define BINARY_CHECK_SIZE 8192
 #define BINARY_DETECTION_SAMPLE_SIZE 1024  // Bytes to sample for binary detection in content
-#define PLUGIN_CHUNK_SIZE 4096
 #define MAX_PATH 4096
-#define MAX_PLUGIN_PARAMS 16
 #define MAX_ERRORS 1000                     // Max errors to track in ErrorManager
+#define DEFAULT_SERVER_WORKERS 4
+#define DEFAULT_SERVER_QUEUE 64
+#define MAX_ALLOW_ROOTS 64
 
 #define MAX_FILE_SIZE (1024ULL * 1024 * 1024)       // 1GB max file size
 #define MAX_STREAM_BUFFER_SIZE (256ULL * 1024 * 1024) // 256MB max buffer
@@ -76,8 +76,6 @@ extern "C"
     typedef enum
     {
         CONFIG_SOURCE_DEFAULTS,
-        CONFIG_SOURCE_FILE,
-        CONFIG_SOURCE_ENV,
         CONFIG_SOURCE_CLI
     } ConfigSource;
 
@@ -86,8 +84,7 @@ extern "C"
     {
         CONFIG_TYPE_STRING,
         CONFIG_TYPE_INT,
-        CONFIG_TYPE_BOOL,
-        CONFIG_TYPE_FLOAT
+        CONFIG_TYPE_BOOL
     } ConfigType;
 
     // Configuration value
@@ -100,45 +97,38 @@ extern "C"
             char *string_value;
             int int_value;
             bool bool_value;
-            double float_value;
         } value;
     } ConfigValue;
 
-    // Plugin configuration
-    typedef struct
+    typedef enum
     {
-        char *path;
-        char **parameters;
-        int parameter_count;
-    } PluginConfig;
+        FCONCAT_MODE_BATCH,
+        FCONCAT_MODE_SERVER
+    } FconcatMode;
 
     // Resolved configuration
     typedef struct
     {
+        FconcatMode mode;
         BinaryHandling binary_handling;
         SymlinkHandling symlink_handling;
         bool show_size;
         bool verbose;
-        bool interactive;
         int log_level;
-        char *output_format;
         char *input_directory;
         char *output_file;
         char **exclude_patterns;
         int exclude_count;
         char **include_patterns;  
-        int include_count;        
-        PluginConfig *plugins;
-        int plugin_count;
+        int include_count;
+        char *listen_host;
+        int listen_port;
+        char **allow_roots;
+        int allow_root_count;
+        int server_workers;
+        int server_queue_size;
+        char *auth_token;
     } ResolvedConfig;
-
-    // Plugin types
-    typedef enum
-    {
-        PLUGIN_TYPE_CONTENT,
-        PLUGIN_TYPE_FORMAT,
-        PLUGIN_TYPE_FILTER
-    } PluginType;
 
     // Error codes
     typedef enum
@@ -148,7 +138,7 @@ extern "C"
         FCONCAT_ERROR_FILE_NOT_FOUND = 2,
         FCONCAT_ERROR_PERMISSION_DENIED = 3,
         FCONCAT_ERROR_OUT_OF_MEMORY = 4,
-        FCONCAT_ERROR_PLUGIN_LOAD_FAILED = 5,
+        FCONCAT_ERROR_SERVER_FAILED = 5,
         FCONCAT_ERROR_CONFIG_INVALID = 6,
         FCONCAT_ERROR_IO_ERROR = 7
     } FconcatErrorCode;

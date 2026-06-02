@@ -159,8 +159,8 @@ jobs:
           cat << 'EOF' >> release_notes.md
           ```
           
-          ### Plugin Support
-          All binaries support dynamic plugin loading. See the [Plugin System](https://github.com/sonemaro/fconcat-reborn#plugin-system) documentation.
+          ### Server Mode
+          This release includes the built-in HTTP streaming server mode. Start it with `fconcat --serve --listen 127.0.0.1:8080 --allow-root /path/to/root`.
           EOF
           
           gh release create "$VERSION" \

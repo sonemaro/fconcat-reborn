@@ -17,7 +17,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <signal.h>
 #include <unistd.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -49,7 +53,12 @@ static int test_root_created = 0;
 static void create_test_root(void)
 {
     if (test_root_created) return;
-    int n = snprintf(test_root, sizeof(test_root), "/tmp/fconcat_integ_%d", getpid());
+    const char *base = getenv("TMPDIR");
+    if (!base || base[0] == '\0')
+        base = getenv("HOME");
+    if (!base || base[0] == '\0')
+        base = ".";
+    int n = snprintf(test_root, sizeof(test_root), "%s/fconcat_integ_%d", base, getpid());
     if (n < 0 || (size_t)n >= sizeof(test_root)) {
         fprintf(stderr, "ERROR: test_root path too long\n");
         exit(1);
@@ -93,6 +102,29 @@ static int create_file(const char *relpath, const char *content)
     return 0;
 }
 
+static int create_large_text_file(const char *relpath, size_t min_size)
+{
+    char path[TEST_PATH_MAX];
+    int n = snprintf(path, sizeof(path), "%s/%s", test_root, relpath);
+    if (n < 0 || (size_t)n >= sizeof(path)) return -1;
+    FILE *f = fopen(path, "w");
+    if (!f) return -1;
+
+    size_t written = 0;
+    const char *chunk = "0123456789abcdef large text payload line\n";
+    size_t chunk_len = strlen(chunk);
+    while (written < min_size) {
+        if (fwrite(chunk, 1, chunk_len, f) != chunk_len) {
+            fclose(f);
+            return -1;
+        }
+        written += chunk_len;
+    }
+    fputs("TAIL-MARKER\n", f);
+    fclose(f);
+    return 0;
+}
+
 static int create_binary_file(const char *relpath, size_t size)
 {
     char path[TEST_PATH_MAX];
@@ -106,6 +138,39 @@ static int create_binary_file(const char *relpath, size_t size)
         fwrite(&byte, 1, 1, f);
     }
     fclose(f);
+    return 0;
+}
+
+static int http_fire_and_close_local(int port, const char *target)
+{
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0)
+        return -1;
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        close(fd);
+        return -1;
+    }
+
+    char request[TEST_PATH_MAX + 256];
+    int n = snprintf(request, sizeof(request),
+                     "GET %s HTTP/1.1\r\n"
+                     "Host: 127.0.0.1\r\n"
+                     "Connection: close\r\n\r\n",
+                     target);
+    if (n < 0 || (size_t)n >= sizeof(request)) {
+        close(fd);
+        return -1;
+    }
+
+    (void)send(fd, request, (size_t)n, 0);
+    close(fd);
     return 0;
 }
 
@@ -188,6 +253,123 @@ static int run_fconcat(char *output, size_t output_size, const char *args_fmt, .
 static int output_contains(const char *output, const char *needle)
 {
     return output && needle && strstr(output, needle) != NULL;
+}
+
+static int http_get_local(int port, const char *target, char *output, size_t output_size)
+{
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0)
+        return -1;
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        close(fd);
+        return -1;
+    }
+
+    char request[TEST_PATH_MAX + 256];
+    int n = snprintf(request, sizeof(request),
+                     "GET %s HTTP/1.1\r\n"
+                     "Host: 127.0.0.1\r\n"
+                     "Connection: close\r\n\r\n",
+                     target);
+    if (n < 0 || (size_t)n >= sizeof(request)) {
+        close(fd);
+        return -1;
+    }
+
+    size_t sent = 0;
+    while (sent < (size_t)n) {
+        ssize_t wr = send(fd, request + sent, (size_t)n - sent, 0);
+        if (wr < 0) {
+            if (errno == EINTR)
+                continue;
+            close(fd);
+            return -1;
+        }
+        sent += (size_t)wr;
+    }
+
+    size_t total = 0;
+    if (output && output_size > 0)
+        output[0] = '\0';
+
+    while (output && total + 1 < output_size) {
+        ssize_t rd = recv(fd, output + total, output_size - total - 1, 0);
+        if (rd < 0) {
+            if (errno == EINTR)
+                continue;
+            close(fd);
+            return -1;
+        }
+        if (rd == 0)
+            break;
+        total += (size_t)rd;
+    }
+
+    if (output && output_size > 0)
+        output[total] = '\0';
+
+    close(fd);
+    return 0;
+}
+
+static pid_t start_fconcat_server(const char *root, int port)
+{
+    pid_t pid = fork();
+    if (pid != 0)
+        return pid;
+
+    char listen[64];
+    snprintf(listen, sizeof(listen), "127.0.0.1:%d", port);
+    freopen("/dev/null", "w", stdout);
+    freopen("/dev/null", "w", stderr);
+    execl(fconcat_bin, fconcat_bin,
+          "--serve",
+          "--listen", listen,
+          "--allow-root", root,
+          "--workers", "1",
+          "--queue", "4",
+          (char *)NULL);
+    _exit(127);
+}
+
+static int stop_fconcat_server(pid_t pid)
+{
+    if (pid <= 0)
+        return -1;
+
+    kill(pid, SIGTERM);
+    for (int i = 0; i < 40; i++) {
+        int status = 0;
+        pid_t done = waitpid(pid, &status, WNOHANG);
+        if (done == pid)
+            return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+        usleep(100000);
+    }
+
+    kill(pid, SIGKILL);
+    waitpid(pid, NULL, 0);
+    return -1;
+}
+
+static int wait_for_server_ready(int port)
+{
+    char response[1024];
+    for (int i = 0; i < 50; i++) {
+        if (http_get_local(port, "/healthz", response, sizeof(response)) == 0 &&
+            output_contains(response, "HTTP/1.1 200 OK") &&
+            output_contains(response, "ok")) {
+            return 0;
+        }
+        usleep(100000);
+    }
+    return -1;
 }
 
 /**
@@ -301,6 +483,63 @@ TEST(integ_multiple_files)
     return 0;
 }
 
+TEST(integ_single_file_golden_output)
+{
+    create_test_root();
+    create_dir("golden");
+    create_file("golden/a.txt", "alpha\n");
+
+    char cmdout[1024];
+    char content[8192];
+    char input_path[TEST_PATH_MAX];
+    snprintf(input_path, sizeof(input_path), "%s/golden", test_root);
+
+    int exit_code = run_fconcat(cmdout, sizeof(cmdout), "'%s' '%s'", input_path, get_output_path());
+
+    const char *expected =
+        "Directory Structure:\n"
+        "==================\n"
+        "\n"
+        "FILE a.txt\n"
+        "\n"
+        "File Contents:\n"
+        "=============\n"
+        "\n"
+        "// File: a.txt\n"
+        "alpha\n"
+        "\n"
+        "\n";
+
+    ASSERT_EQ(0, exit_code);
+    ASSERT_EQ(0, read_output_file(get_output_path(), content, sizeof(content)));
+    ASSERT_STR_EQ(expected, content);
+
+    return 0;
+}
+
+TEST(integ_output_file_self_exclusion)
+{
+    create_test_root();
+    create_dir("self-exclude");
+    create_file("self-exclude/source.txt", "source content");
+
+    char cmdout[1024];
+    char content[8192];
+    char input_path[TEST_PATH_MAX];
+    char output_path[TEST_PATH_MAX];
+    snprintf(input_path, sizeof(input_path), "%s/self-exclude", test_root);
+    snprintf(output_path, sizeof(output_path), "%s/self-exclude/out.txt", test_root);
+
+    int exit_code = run_fconcat(cmdout, sizeof(cmdout), "'%s' '%s'", input_path, output_path);
+
+    ASSERT_EQ(0, exit_code);
+    ASSERT_EQ(0, read_output_file(output_path, content, sizeof(content)));
+    ASSERT_TRUE(output_contains(content, "source.txt"));
+    ASSERT_FALSE(output_contains(content, "out.txt"));
+
+    return 0;
+}
+
 /* =========================================================================
  * Symlink Tests
  * ========================================================================= */
@@ -376,6 +615,29 @@ TEST(integ_broken_symlink)
     return 0;
 }
 
+TEST(integ_symlink_placeholder)
+{
+    create_test_root();
+    create_dir("symplaceholder");
+    create_file("symplaceholder/target.txt", "target content");
+    create_symlink_file("target.txt", "symplaceholder/link.txt");
+
+    char cmdout[1024];
+    char content[8192];
+    char input_path[TEST_PATH_MAX];
+    snprintf(input_path, sizeof(input_path), "%s/symplaceholder", test_root);
+
+    int exit_code = run_fconcat(cmdout, sizeof(cmdout),
+                                "'%s' '%s' --symlinks placeholder", input_path, get_output_path());
+
+    ASSERT_EQ(0, exit_code);
+    ASSERT_EQ(0, read_output_file(get_output_path(), content, sizeof(content)));
+    ASSERT_TRUE(output_contains(content, "link.txt"));
+    ASSERT_TRUE(output_contains(content, "Symbolic link to: target.txt"));
+
+    return 0;
+}
+
 /* =========================================================================
  * Binary File Tests
  * ========================================================================= */
@@ -401,6 +663,51 @@ TEST(integ_binary_file_detection)
     ASSERT_TRUE(output_contains(content, "This is plain text"));
     /* Binary file should be filtered out or marked as binary */
     
+    return 0;
+}
+
+TEST(integ_binary_placeholder)
+{
+    create_test_root();
+    create_dir("binplaceholder");
+    create_binary_file("binplaceholder/binary.bin", 256);
+
+    char cmdout[1024];
+    char content[8192];
+    char input_path[TEST_PATH_MAX];
+    snprintf(input_path, sizeof(input_path), "%s/binplaceholder", test_root);
+
+    int exit_code = run_fconcat(cmdout, sizeof(cmdout),
+                                "'%s' '%s' --binary-placeholder", input_path, get_output_path());
+
+    ASSERT_EQ(0, exit_code);
+    ASSERT_EQ(0, read_output_file(get_output_path(), content, sizeof(content)));
+    ASSERT_TRUE(output_contains(content, "binary.bin"));
+    ASSERT_TRUE(output_contains(content, "[Binary file content not displayed]"));
+
+    return 0;
+}
+
+TEST(integ_large_text_file_streaming)
+{
+    create_test_root();
+    create_dir("large");
+    create_large_text_file("large/big.txt", 200 * 1024);
+
+    char cmdout[1024];
+    char *content = malloc(260 * 1024);
+    ASSERT_NOT_NULL(content);
+    char input_path[TEST_PATH_MAX];
+    snprintf(input_path, sizeof(input_path), "%s/large", test_root);
+
+    int exit_code = run_fconcat(cmdout, sizeof(cmdout), "'%s' '%s'", input_path, get_output_path());
+
+    ASSERT_EQ(0, exit_code);
+    ASSERT_EQ(0, read_output_file(get_output_path(), content, 260 * 1024));
+    ASSERT_TRUE(output_contains(content, "big.txt"));
+    ASSERT_TRUE(output_contains(content, "TAIL-MARKER"));
+    free(content);
+
     return 0;
 }
 
@@ -578,12 +885,158 @@ TEST(integ_nonexistent_directory)
     int exit_code = run_fconcat(output, sizeof(output), 
                                 "/nonexistent/path '%s'", get_output_path());
     
-    /* fconcat completes successfully even with nonexistent input (just warns) */
-    /* This test verifies it doesn't crash and produces warning output */
-    ASSERT_EQ(0, exit_code);
-    ASSERT_TRUE(output_contains(output, "Cannot stat") || 
-                output_contains(output, "No such file"));
+    ASSERT_NE(0, exit_code);
+    ASSERT_TRUE(output_contains(output, "Invalid input directory"));
     
+    return 0;
+}
+
+TEST(integ_removed_format_option_is_rejected)
+{
+    create_test_root();
+    create_dir("removed-format");
+    create_file("removed-format/file.txt", "content");
+
+    char output[8192];
+    char input_path[TEST_PATH_MAX];
+    snprintf(input_path, sizeof(input_path), "%s/removed-format", test_root);
+
+    int exit_code = run_fconcat(output, sizeof(output),
+                                "'%s' '%s' --format json", input_path, get_output_path());
+
+    ASSERT_NE(0, exit_code);
+    ASSERT_TRUE(output_contains(output, "Invalid arguments"));
+    
+    return 0;
+}
+
+TEST(integ_removed_plugin_option_is_rejected)
+{
+    create_test_root();
+    create_dir("removed-plugin");
+    create_file("removed-plugin/file.txt", "content");
+
+    char output[8192];
+    char input_path[TEST_PATH_MAX];
+    snprintf(input_path, sizeof(input_path), "%s/removed-plugin", test_root);
+
+    int exit_code = run_fconcat(output, sizeof(output),
+                                "'%s' '%s' --plugin ./old.so", input_path, get_output_path());
+
+    ASSERT_NE(0, exit_code);
+    ASSERT_TRUE(output_contains(output, "Invalid arguments"));
+    
+    return 0;
+}
+
+TEST(integ_server_health_and_concat_stream)
+{
+    create_test_root();
+    create_dir("server-root");
+    create_file("server-root/a.txt", "server content");
+    create_file("server-root/b.c", "filtered out");
+
+    char root[TEST_PATH_MAX];
+    snprintf(root, sizeof(root), "%s/server-root", test_root);
+
+    int port = 18000 + (getpid() % 20000);
+    pid_t pid = start_fconcat_server(root, port);
+    ASSERT_TRUE(pid > 0);
+
+    if (wait_for_server_ready(port) != 0) {
+        (void)stop_fconcat_server(pid);
+        ASSERT_TRUE(0);
+    }
+
+    char bad_target[TEST_PATH_MAX + 128];
+    snprintf(bad_target, sizeof(bad_target), "/concat?root=%s&include=*.txt&unknown=x", root);
+    char bad_response[8192];
+    ASSERT_EQ(0, http_get_local(port, bad_target, bad_response, sizeof(bad_response)));
+    ASSERT_TRUE(output_contains(bad_response, "HTTP/1.1 400 Bad Request"));
+
+    char target[TEST_PATH_MAX + 128];
+    snprintf(target, sizeof(target), "/concat?root=%s&include=*.txt", root);
+
+    char response[65536];
+    int result = http_get_local(port, target, response, sizeof(response));
+    int server_exit = stop_fconcat_server(pid);
+
+    ASSERT_EQ(0, result);
+    ASSERT_EQ(0, server_exit);
+    ASSERT_TRUE(output_contains(response, "HTTP/1.1 200 OK"));
+    ASSERT_TRUE(output_contains(response, "Transfer-Encoding: chunked"));
+    ASSERT_TRUE(output_contains(response, "a.txt"));
+    ASSERT_TRUE(output_contains(response, "server content"));
+    ASSERT_FALSE(output_contains(response, "filtered out"));
+
+    return 0;
+}
+
+TEST(integ_server_denied_root)
+{
+    create_test_root();
+    create_dir("server-allowed");
+    create_dir("server-denied");
+    create_file("server-denied/secret.txt", "secret");
+
+    char allowed[TEST_PATH_MAX];
+    char denied[TEST_PATH_MAX];
+    snprintf(allowed, sizeof(allowed), "%s/server-allowed", test_root);
+    snprintf(denied, sizeof(denied), "%s/server-denied", test_root);
+
+    int port = 19000 + (getpid() % 20000);
+    pid_t pid = start_fconcat_server(allowed, port);
+    ASSERT_TRUE(pid > 0);
+
+    if (wait_for_server_ready(port) != 0) {
+        (void)stop_fconcat_server(pid);
+        ASSERT_TRUE(0);
+    }
+
+    char target[TEST_PATH_MAX + 128];
+    snprintf(target, sizeof(target), "/concat?root=%s", denied);
+    char response[8192];
+    int result = http_get_local(port, target, response, sizeof(response));
+    int server_exit = stop_fconcat_server(pid);
+
+    ASSERT_EQ(0, result);
+    ASSERT_EQ(0, server_exit);
+    ASSERT_TRUE(output_contains(response, "HTTP/1.1 403 Forbidden"));
+
+    return 0;
+}
+
+TEST(integ_server_client_disconnect_cleanup)
+{
+    create_test_root();
+    create_dir("server-disconnect");
+    create_large_text_file("server-disconnect/big.txt", 200 * 1024);
+
+    char root[TEST_PATH_MAX];
+    snprintf(root, sizeof(root), "%s/server-disconnect", test_root);
+
+    int port = 20000 + (getpid() % 20000);
+    pid_t pid = start_fconcat_server(root, port);
+    ASSERT_TRUE(pid > 0);
+
+    if (wait_for_server_ready(port) != 0) {
+        (void)stop_fconcat_server(pid);
+        ASSERT_TRUE(0);
+    }
+
+    char target[TEST_PATH_MAX + 128];
+    snprintf(target, sizeof(target), "/concat?root=%s", root);
+    ASSERT_EQ(0, http_fire_and_close_local(port, target));
+    usleep(200000);
+
+    char response[1024];
+    int health = http_get_local(port, "/healthz", response, sizeof(response));
+    int server_exit = stop_fconcat_server(pid);
+
+    ASSERT_EQ(0, health);
+    ASSERT_EQ(0, server_exit);
+    ASSERT_TRUE(output_contains(response, "HTTP/1.1 200 OK"));
+
     return 0;
 }
 
@@ -618,14 +1071,19 @@ int test_traversal_main(void)
     RUN_TEST(integ_empty_directory);
     RUN_TEST(integ_nested_directories);
     RUN_TEST(integ_multiple_files);
+    RUN_TEST(integ_single_file_golden_output);
+    RUN_TEST(integ_output_file_self_exclusion);
     
     TEST_SUITE_BEGIN("Symlink Handling");
     RUN_TEST(integ_symlink_skip_default);
     RUN_TEST(integ_circular_symlink_no_hang);
     RUN_TEST(integ_broken_symlink);
+    RUN_TEST(integ_symlink_placeholder);
     
     TEST_SUITE_BEGIN("Binary File Detection");
     RUN_TEST(integ_binary_file_detection);
+    RUN_TEST(integ_binary_placeholder);
+    RUN_TEST(integ_large_text_file_streaming);
     
     TEST_SUITE_BEGIN("Filter Patterns");
     RUN_TEST(integ_include_pattern);
@@ -641,6 +1099,11 @@ int test_traversal_main(void)
     RUN_TEST(integ_help_option);
     RUN_TEST(integ_version_option);
     RUN_TEST(integ_nonexistent_directory);
+    RUN_TEST(integ_removed_format_option_is_rejected);
+    RUN_TEST(integ_removed_plugin_option_is_rejected);
+    RUN_TEST(integ_server_health_and_concat_stream);
+    RUN_TEST(integ_server_denied_root);
+    RUN_TEST(integ_server_client_disconnect_cleanup);
     
     TEST_SUMMARY();
     

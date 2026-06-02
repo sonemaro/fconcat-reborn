@@ -13,16 +13,8 @@ extern "C"
 {
 #endif
 
-// Plugin export macro
-#ifdef _WIN32
-#define PLUGIN_EXPORT __declspec(dllexport)
-#else
-#define PLUGIN_EXPORT __attribute__((visibility("default")))
-#endif
-
     // Forward declarations - minimal set
     typedef struct FconcatContext FconcatContext;
-    typedef struct PluginFileContext PluginFileContext;
 
     // Log levels
     typedef enum
@@ -44,11 +36,6 @@ extern "C"
         const char *(*get_config_string)(FconcatContext *ctx, const char *key);
         int (*get_config_int)(FconcatContext *ctx, const char *key);
         bool (*get_config_bool)(FconcatContext *ctx, const char *key);
-
-        // Plugin parameter access
-        const char *(*get_plugin_parameter)(FconcatContext *ctx, const char *plugin_name, const char *param_name);
-        int (*get_plugin_parameter_count)(FconcatContext *ctx, const char *plugin_name);
-        const char *(*get_plugin_parameter_by_index)(FconcatContext *ctx, const char *plugin_name, int index);
 
         // Logging system
         void (*log)(FconcatContext *ctx, LogLevel level, const char *format, ...);
@@ -90,11 +77,6 @@ extern "C"
         // Progress reporting
         void (*progress)(FconcatContext *ctx, const char *operation, size_t current, size_t total);
         void (*set_progress_callback)(FconcatContext *ctx, ProgressCallback callback, void *user_data);
-
-        // Plugin functions
-        void *(*get_plugin_data)(FconcatContext *ctx, const char *plugin_name);
-        int (*set_plugin_data)(FconcatContext *ctx, const char *plugin_name, void *data, size_t size);
-        int (*call_plugin_method)(FconcatContext *ctx, const char *plugin_name, const char *method, void *args);
 
         // Stream utilities
         void *(*create_stream_buffer)(FconcatContext *ctx, size_t initial_size);
