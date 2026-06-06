@@ -16,18 +16,33 @@
 #endif
 #endif
 
-static int filter_engine_rules_are_valid(const FilterEngine *engine)
+static int filter_engine_rule_storage_is_safe(const FilterEngine *engine)
 {
     if (!engine)
         return 0;
-    if (engine->rule_count < 0 || engine->rule_capacity < 0 ||
-        engine->rule_count > engine->rule_capacity)
+    if (engine->rule_capacity < 0)
         return 0;
     if (engine->rule_capacity > 0 && !engine->rules)
         return 0;
     if ((size_t)engine->rule_capacity > SIZE_MAX / sizeof(FilterRule))
         return 0;
     return 1;
+}
+
+static int filter_engine_rules_are_valid(const FilterEngine *engine)
+{
+    if (!filter_engine_rule_storage_is_safe(engine))
+        return 0;
+    return engine->rule_count >= 0 && engine->rule_count <= engine->rule_capacity;
+}
+
+static int filter_engine_cleanup_count(const FilterEngine *engine)
+{
+    if (!filter_engine_rule_storage_is_safe(engine))
+        return 0;
+    if (engine->rule_count < 0 || engine->rule_count > engine->rule_capacity)
+        return engine->rule_capacity;
+    return engine->rule_count;
 }
 
 char *get_absolute_path_util(const char *path)
@@ -167,7 +182,7 @@ void filter_engine_destroy(FilterEngine *engine)
     pthread_mutex_lock(&engine->mutex);
 
     // Cleanup rule contexts
-    int rule_count = filter_engine_rules_are_valid(engine) ? engine->rule_count : 0;
+    int rule_count = filter_engine_cleanup_count(engine);
     for (int i = 0; i < rule_count; i++)
     {
         FilterRule *rule = &engine->rules[i];

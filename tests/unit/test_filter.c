@@ -64,6 +64,11 @@ static char* create_test_file(const char *filename, const char *content, size_t 
     return filepath;
 }
 
+static void free_rule_context(void *context)
+{
+    free(context);
+}
+
 /* =========================================================================
  * FilterEngine Lifecycle Tests
  * ========================================================================= */
@@ -88,6 +93,49 @@ TEST(filter_engine_initial_state)
     ASSERT_NOT_NULL(engine);
     ASSERT_NOT_NULL(engine->rules);
     ASSERT_EQ(0, engine->rule_count);
+    filter_engine_destroy(engine);
+    return 0;
+}
+
+TEST(filter_engine_destroy_cleans_contexts_with_corrupt_rule_count)
+{
+    FilterEngine *engine = filter_engine_create();
+    ASSERT_NOT_NULL(engine);
+
+    void *ctx1 = calloc(1, 1);
+    void *ctx2 = calloc(1, 1);
+    if (!ctx1 || !ctx2)
+    {
+        free(ctx1);
+        free(ctx2);
+        filter_engine_destroy(engine);
+        return 1;
+    }
+
+    FilterRule rule = {0};
+    rule.type = FILTER_TYPE_EXCLUDE;
+    rule.destroy_context = free_rule_context;
+
+    rule.context = ctx1;
+    if (filter_engine_add_rule_internal(engine, &rule) != 0)
+    {
+        free(ctx1);
+        free(ctx2);
+        filter_engine_destroy(engine);
+        return 1;
+    }
+    ctx1 = NULL;
+
+    rule.context = ctx2;
+    if (filter_engine_add_rule_internal(engine, &rule) != 0)
+    {
+        free(ctx2);
+        filter_engine_destroy(engine);
+        return 1;
+    }
+    ctx2 = NULL;
+
+    engine->rule_count = engine->rule_capacity + 1;
     filter_engine_destroy(engine);
     return 0;
 }
@@ -512,6 +560,7 @@ int test_filter_main(void)
     RUN_TEST(filter_engine_create_returns_valid_pointer);
     RUN_TEST(filter_engine_destroy_null_is_safe);
     RUN_TEST(filter_engine_initial_state);
+    RUN_TEST(filter_engine_destroy_cleans_contexts_with_corrupt_rule_count);
     
     TEST_SUITE_BEGIN("Path Utilities");
     RUN_TEST(get_filename_util_basic);
