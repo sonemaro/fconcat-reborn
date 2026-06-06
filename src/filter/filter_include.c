@@ -6,13 +6,31 @@
 #include <stdio.h>
 #include <stdint.h>
 
-static int include_context_is_valid(const IncludeContext *ctx)
+static void destroy_include_context(IncludeContext *ctx);
+
+static int include_context_storage_is_safe(const IncludeContext *ctx)
 {
-    if (!ctx || ctx->pattern_count < 0 || ctx->pattern_count > MAX_INCLUDES)
+    if (!ctx || ctx->pattern_capacity < 0 || ctx->pattern_capacity > MAX_INCLUDES)
         return 0;
-    if (ctx->pattern_count > 0 && !ctx->patterns)
+    if (ctx->pattern_capacity > 0 && !ctx->patterns)
         return 0;
     return 1;
+}
+
+static int include_context_is_valid(const IncludeContext *ctx)
+{
+    if (!include_context_storage_is_safe(ctx))
+        return 0;
+    return ctx->pattern_count >= 0 && ctx->pattern_count <= ctx->pattern_capacity;
+}
+
+static int include_context_cleanup_count(const IncludeContext *ctx)
+{
+    if (!include_context_storage_is_safe(ctx))
+        return 0;
+    if (ctx->pattern_count < 0 || ctx->pattern_count > ctx->pattern_capacity)
+        return ctx->pattern_capacity;
+    return ctx->pattern_count;
 }
 
 // Check if path matches any include pattern
@@ -85,18 +103,18 @@ static IncludeContext *create_include_context(const ResolvedConfig *config)
     if ((size_t)config->include_count > SIZE_MAX / sizeof(char *))
         return NULL;
 
-    IncludeContext *ctx = malloc(sizeof(IncludeContext));
+    IncludeContext *ctx = calloc(1, sizeof(IncludeContext));
     if (!ctx)
         return NULL;
 
-    ctx->patterns = malloc(config->include_count * sizeof(char *));
+    ctx->patterns = calloc((size_t)config->include_count, sizeof(char *));
     if (!ctx->patterns)
     {
         free(ctx);
         return NULL;
     }
 
-    ctx->pattern_count = config->include_count;
+    ctx->pattern_capacity = config->include_count;
 
     // Copy patterns and normalize them using utility function
     for (int i = 0; i < config->include_count; i++)
@@ -106,27 +124,20 @@ static IncludeContext *create_include_context(const ResolvedConfig *config)
             ctx->patterns[i] = filter_normalize_pattern(config->include_patterns[i]);
             if (!ctx->patterns[i])
             {
-                // Cleanup on failure
-                for (int j = 0; j < i; j++)
-                {
-                    free(ctx->patterns[j]);
-                }
-                free(ctx->patterns);
-                free(ctx);
+                destroy_include_context(ctx);
                 return NULL;
             }
         }
         else
         {
             ctx->patterns[i] = strdup(""); // Empty pattern
-            if (!ctx->patterns[i]) {
-                // Cleanup on failure
-                for (int j = 0; j < i; j++) free(ctx->patterns[j]);
-                free(ctx->patterns);
-                free(ctx);
+            if (!ctx->patterns[i])
+            {
+                destroy_include_context(ctx);
                 return NULL;
             }
         }
+        ctx->pattern_count++;
     }
 
     return ctx;
@@ -138,7 +149,7 @@ static void destroy_include_context(IncludeContext *ctx)
     if (!ctx)
         return;
 
-    int pattern_count = include_context_is_valid(ctx) ? ctx->pattern_count : 0;
+    int pattern_count = include_context_cleanup_count(ctx);
     for (int i = 0; i < pattern_count; i++)
     {
         free(ctx->patterns[i]);

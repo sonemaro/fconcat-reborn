@@ -6,13 +6,31 @@
 #include <stdio.h>
 #include <stdint.h>
 
-static int exclude_context_is_valid(const ExcludeContext *ctx)
+static void destroy_exclude_context(ExcludeContext *ctx);
+
+static int exclude_context_storage_is_safe(const ExcludeContext *ctx)
 {
-    if (!ctx || ctx->pattern_count < 0 || ctx->pattern_count > MAX_EXCLUDES)
+    if (!ctx || ctx->pattern_capacity < 0 || ctx->pattern_capacity > MAX_EXCLUDES)
         return 0;
-    if (ctx->pattern_count > 0 && !ctx->patterns)
+    if (ctx->pattern_capacity > 0 && !ctx->patterns)
         return 0;
     return 1;
+}
+
+static int exclude_context_is_valid(const ExcludeContext *ctx)
+{
+    if (!exclude_context_storage_is_safe(ctx))
+        return 0;
+    return ctx->pattern_count >= 0 && ctx->pattern_count <= ctx->pattern_capacity;
+}
+
+static int exclude_context_cleanup_count(const ExcludeContext *ctx)
+{
+    if (!exclude_context_storage_is_safe(ctx))
+        return 0;
+    if (ctx->pattern_count < 0 || ctx->pattern_count > ctx->pattern_capacity)
+        return ctx->pattern_capacity;
+    return ctx->pattern_count;
 }
 
 // Check if path matches any exclude pattern
@@ -72,18 +90,18 @@ static ExcludeContext *create_exclude_context(const ResolvedConfig *config)
     if ((size_t)config->exclude_count > SIZE_MAX / sizeof(char *))
         return NULL;
 
-    ExcludeContext *ctx = malloc(sizeof(ExcludeContext));
+    ExcludeContext *ctx = calloc(1, sizeof(ExcludeContext));
     if (!ctx)
         return NULL;
 
-    ctx->patterns = malloc(config->exclude_count * sizeof(char *));
+    ctx->patterns = calloc((size_t)config->exclude_count, sizeof(char *));
     if (!ctx->patterns)
     {
         free(ctx);
         return NULL;
     }
 
-    ctx->pattern_count = config->exclude_count;
+    ctx->pattern_capacity = config->exclude_count;
 
     // Copy patterns and normalize them using utility function
     for (int i = 0; i < config->exclude_count; i++)
@@ -93,13 +111,7 @@ static ExcludeContext *create_exclude_context(const ResolvedConfig *config)
             ctx->patterns[i] = filter_normalize_pattern(config->exclude_patterns[i]);
             if (!ctx->patterns[i])
             {
-                // Cleanup on failure
-                for (int j = 0; j < i; j++)
-                {
-                    free(ctx->patterns[j]);
-                }
-                free(ctx->patterns);
-                free(ctx);
+                destroy_exclude_context(ctx);
                 return NULL;
             }
         }
@@ -108,16 +120,11 @@ static ExcludeContext *create_exclude_context(const ResolvedConfig *config)
             ctx->patterns[i] = strdup(""); // Empty pattern
             if (!ctx->patterns[i])
             {
-                // Cleanup on failure
-                for (int j = 0; j < i; j++)
-                {
-                    free(ctx->patterns[j]);
-                }
-                free(ctx->patterns);
-                free(ctx);
+                destroy_exclude_context(ctx);
                 return NULL;
             }
         }
+        ctx->pattern_count++;
     }
 
     return ctx;
@@ -129,7 +136,7 @@ static void destroy_exclude_context(ExcludeContext *ctx)
     if (!ctx)
         return;
 
-    int pattern_count = exclude_context_is_valid(ctx) ? ctx->pattern_count : 0;
+    int pattern_count = exclude_context_cleanup_count(ctx);
     for (int i = 0; i < pattern_count; i++)
     {
         free(ctx->patterns[i]);

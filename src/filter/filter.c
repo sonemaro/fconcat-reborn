@@ -244,7 +244,7 @@ static int add_output_file_exclusion(FilterEngine *engine, const ResolvedConfig 
     if (output_inside_input)
     {
         // Create exclusion context for output file
-        ExcludeContext *ctx = malloc(sizeof(ExcludeContext));
+        ExcludeContext *ctx = calloc(1, sizeof(ExcludeContext));
         if (!ctx)
         {
             if (normalized_input != abs_input)
@@ -255,7 +255,7 @@ static int add_output_file_exclusion(FilterEngine *engine, const ResolvedConfig 
         }
 
         // Create patterns array (max 3 patterns)
-        ctx->patterns = malloc(3 * sizeof(char *));
+        ctx->patterns = calloc(3, sizeof(char *));
         if (!ctx->patterns)
         {
             free(ctx);
@@ -266,7 +266,7 @@ static int add_output_file_exclusion(FilterEngine *engine, const ResolvedConfig 
             return -1;
         }
 
-        ctx->pattern_count = 0;
+        ctx->pattern_capacity = 3;
 
         ctx->patterns[ctx->pattern_count] = strdup(abs_output);
         if (!ctx->patterns[ctx->pattern_count])

@@ -43,6 +43,7 @@ extern "C"
     {
         char **patterns;
         int pattern_count;
+        int pattern_capacity;
     } ExcludeContext;
 
     // Include pattern context
@@ -50,6 +51,7 @@ extern "C"
     {
         char **patterns;
         int pattern_count;
+        int pattern_capacity;
     } IncludeContext;
 
     // Filter functions

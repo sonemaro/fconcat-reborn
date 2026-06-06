@@ -264,6 +264,7 @@ TEST(exclude_match_path_basic_pattern)
     char *patterns[] = {"*.log", "*.tmp"};
     ctx.patterns = patterns;
     ctx.pattern_count = 2;
+    ctx.pattern_capacity = 2;
     
     // Should match *.log pattern - returns 1 meaning "exclude this"
     int result = exclude_match_path("debug.log", NULL, &ctx);
@@ -282,6 +283,7 @@ TEST(exclude_match_path_directory_pattern)
     char *patterns[] = {"node_modules", ".git"};
     ctx.patterns = patterns;
     ctx.pattern_count = 2;
+    ctx.pattern_capacity = 2;
     
     // Direct match - returns 1 meaning "exclude this"
     int result = exclude_match_path("node_modules", NULL, &ctx);
@@ -307,6 +309,7 @@ TEST(exclude_match_path_rejects_corrupt_context_counts)
     ExcludeContext ctx;
     char *patterns[] = {"*.nomatch"};
     ctx.patterns = patterns;
+    ctx.pattern_capacity = 1;
 
     ctx.pattern_count = -1;
     ASSERT_EQ(0, exclude_match_path("debug.log", NULL, &ctx));
@@ -333,6 +336,7 @@ TEST(include_match_path_basic_pattern)
     char *patterns[] = {"*.c", "*.h"};
     ctx.patterns = patterns;
     ctx.pattern_count = 2;
+    ctx.pattern_capacity = 2;
     
     // Should match *.c pattern
     int result = include_match_path("main.c", NULL, &ctx);
@@ -358,6 +362,7 @@ TEST(include_match_path_empty_patterns)
     IncludeContext ctx;
     ctx.patterns = NULL;
     ctx.pattern_count = 0;
+    ctx.pattern_capacity = 0;
     
     // No patterns means the loop doesn't execute - returns 0
     int result = include_match_path("anything.xyz", NULL, &ctx);
@@ -370,6 +375,7 @@ TEST(include_match_path_rejects_corrupt_context_counts)
     IncludeContext ctx;
     char *patterns[] = {"*.nomatch"};
     ctx.patterns = patterns;
+    ctx.pattern_capacity = 1;
 
     ctx.pattern_count = -1;
     ASSERT_EQ(0, include_match_path("main.c", NULL, &ctx));
@@ -514,6 +520,13 @@ TEST(filter_context_destroyers_handle_corrupt_counts)
         destroy_exclude_context_wrapper(exclude_ctx);
         return 1;
     }
+    exclude_ctx->pattern_capacity = 1;
+    exclude_ctx->patterns[0] = strdup("*.tmp");
+    if (!exclude_ctx->patterns[0])
+    {
+        destroy_exclude_context_wrapper(exclude_ctx);
+        return 1;
+    }
     exclude_ctx->pattern_count = MAX_EXCLUDES + 1;
     destroy_exclude_context_wrapper(exclude_ctx);
 
@@ -522,6 +535,13 @@ TEST(filter_context_destroyers_handle_corrupt_counts)
         return 1;
     include_ctx->patterns = calloc(1, sizeof(*include_ctx->patterns));
     if (!include_ctx->patterns)
+    {
+        destroy_include_context_wrapper(include_ctx);
+        return 1;
+    }
+    include_ctx->pattern_capacity = 1;
+    include_ctx->patterns[0] = strdup("*.c");
+    if (!include_ctx->patterns[0])
     {
         destroy_include_context_wrapper(include_ctx);
         return 1;
