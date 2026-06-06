@@ -41,6 +41,7 @@ TEST_SOURCES := \
 	tests/unit/test_filter.c \
 	tests/unit/test_memory.c \
 	tests/unit/test_output.c \
+	tests/unit/test_server.c \
 	tests/integration/test_traversal.c
 
 OBJECTS := $(SOURCES:.c=.o)

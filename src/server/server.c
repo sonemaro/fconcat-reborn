@@ -60,8 +60,10 @@ typedef struct
     char *root;
     char **includes;
     int include_count;
+    int include_capacity;
     char **excludes;
     int exclude_count;
+    int exclude_capacity;
     bool show_size;
     BinaryHandling binary_handling;
     SymlinkHandling symlink_handling;
@@ -379,25 +381,56 @@ static void request_options_cleanup(RequestOptions *opts)
 {
     if (!opts)
         return;
+
+    int include_count = 0;
+    if (opts->includes && opts->include_capacity >= 0 && opts->include_capacity <= MAX_INCLUDES)
+        include_count = (opts->include_count >= 0 && opts->include_count <= opts->include_capacity)
+                            ? opts->include_count
+                            : opts->include_capacity;
+
+    int exclude_count = 0;
+    if (opts->excludes && opts->exclude_capacity >= 0 && opts->exclude_capacity <= MAX_EXCLUDES)
+        exclude_count = (opts->exclude_count >= 0 && opts->exclude_count <= opts->exclude_capacity)
+                            ? opts->exclude_count
+                            : opts->exclude_capacity;
+
     free(opts->root);
-    for (int i = 0; i < opts->include_count; i++)
+    for (int i = 0; i < include_count; i++)
         free(opts->includes[i]);
     free(opts->includes);
-    for (int i = 0; i < opts->exclude_count; i++)
+    for (int i = 0; i < exclude_count; i++)
         free(opts->excludes[i]);
     free(opts->excludes);
     memset(opts, 0, sizeof(*opts));
 }
 
-static int append_request_string(char ***items, int *count, int max_count, char *value)
+static int append_request_string(char ***items, int *count, int *capacity, int max_count, char *value)
 {
-    if (!items || !count || !value || *count < 0 || max_count < 0 || *count >= max_count)
+    if (!items || !count || !capacity || !value || *count < 0 || *capacity < 0 ||
+        max_count < 0 || *capacity > max_count || *count > *capacity || *count >= max_count)
         return -1;
-    char **new_items = realloc(*items, (size_t)(*count + 1) * sizeof(char *));
-    if (!new_items)
+    if (!*items && *capacity != 0)
         return -1;
-    new_items[*count] = value;
-    *items = new_items;
+
+    if (*count == *capacity)
+    {
+        int new_capacity = *capacity == 0 ? 1 : *capacity * 2;
+        if (new_capacity < *capacity || new_capacity > max_count)
+            new_capacity = max_count;
+        if (new_capacity <= *capacity)
+            return -1;
+
+        char **new_items = realloc(*items, (size_t)new_capacity * sizeof(char *));
+        if (!new_items)
+            return -1;
+
+        for (int i = *capacity; i < new_capacity; i++)
+            new_items[i] = NULL;
+        *items = new_items;
+        *capacity = new_capacity;
+    }
+
+    (*items)[*count] = value;
     (*count)++;
     return 0;
 }
@@ -476,13 +509,15 @@ static int parse_concat_query(const char *query, const ResolvedConfig *base, Req
         }
         else if (strcmp(key, "include") == 0)
         {
-            result = append_request_string(&opts->includes, &opts->include_count, MAX_INCLUDES, value);
+            result = append_request_string(&opts->includes, &opts->include_count,
+                                           &opts->include_capacity, MAX_INCLUDES, value);
             if (result == 0)
                 value = NULL;
         }
         else if (strcmp(key, "exclude") == 0)
         {
-            result = append_request_string(&opts->excludes, &opts->exclude_count, MAX_EXCLUDES, value);
+            result = append_request_string(&opts->excludes, &opts->exclude_count,
+                                           &opts->exclude_capacity, MAX_EXCLUDES, value);
             if (result == 0)
                 value = NULL;
         }
@@ -678,6 +713,8 @@ static void handle_concat(ServerRuntime *runtime, int fd, const char *query)
     opts.excludes = NULL;
     opts.include_count = 0;
     opts.exclude_count = 0;
+    opts.include_capacity = 0;
+    opts.exclude_capacity = 0;
 
     if (send_all(fd,
                  "HTTP/1.1 200 OK\r\n"
@@ -730,6 +767,60 @@ static void handle_concat(ServerRuntime *runtime, int fd, const char *query)
     resolved_config_cleanup(&req);
     request_options_cleanup(&opts);
 }
+
+#ifdef FCONCAT_LEAK_GUARD
+int server_test_request_options_cleanup_corrupt_counts(void)
+{
+    RequestOptions opts;
+    memset(&opts, 0, sizeof(opts));
+
+    opts.root = strdup("/tmp/fconcat");
+    opts.includes = calloc(2, sizeof(*opts.includes));
+    opts.excludes = calloc(1, sizeof(*opts.excludes));
+    if (!opts.root || !opts.includes || !opts.excludes)
+    {
+        request_options_cleanup(&opts);
+        return -1;
+    }
+
+    opts.include_capacity = 2;
+    opts.exclude_capacity = 1;
+    opts.include_count = 2;
+    opts.exclude_count = 1;
+    opts.includes[0] = strdup("*.c");
+    opts.includes[1] = strdup("*.h");
+    opts.excludes[0] = strdup("*.tmp");
+    if (!opts.includes[0] || !opts.includes[1] || !opts.excludes[0])
+    {
+        request_options_cleanup(&opts);
+        return -1;
+    }
+
+    opts.include_count = MAX_INCLUDES + 1;
+    opts.exclude_count = -1;
+    request_options_cleanup(&opts);
+
+    memset(&opts, 0, sizeof(opts));
+    opts.includes = calloc(1, sizeof(*opts.includes));
+    if (!opts.includes)
+    {
+        request_options_cleanup(&opts);
+        return -1;
+    }
+
+    opts.include_capacity = 1;
+    opts.include_count = -1;
+    opts.includes[0] = strdup("*.md");
+    if (!opts.includes[0])
+    {
+        request_options_cleanup(&opts);
+        return -1;
+    }
+
+    request_options_cleanup(&opts);
+    return 0;
+}
+#endif
 
 static void handle_client(ServerRuntime *runtime, int fd)
 {

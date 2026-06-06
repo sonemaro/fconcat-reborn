@@ -19,6 +19,7 @@ extern int test_context_main(void);
 extern int test_error_main(void);
 extern int test_file_index_main(void);
 extern int test_output_main(void);
+extern int test_server_main(void);
 extern int test_traversal_main(void);
 
 static int run_unit_tests(void)
@@ -56,6 +57,10 @@ static int run_unit_tests(void)
     /* Output tests */
     fprintf(stderr, "\n>>> Running output tests...\n");
     failed += test_output_main();
+
+    /* Server tests */
+    fprintf(stderr, "\n>>> Running server tests...\n");
+    failed += test_server_main();
     
     return failed;
 }
