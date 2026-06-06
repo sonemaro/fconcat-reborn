@@ -5,6 +5,7 @@
 
 #include "test_framework.h"
 #include "../../src/core/error.h"
+#include <limits.h>
 
 TEST(error_reporting_rejects_null_inputs)
 {
@@ -48,6 +49,33 @@ TEST(error_reporting_respects_capacity)
     return 0;
 }
 
+TEST(error_reporting_handles_corrupt_counts)
+{
+    ErrorManager *manager = error_manager_create();
+    ASSERT_NOT_NULL(manager);
+
+    manager->error_count = -7;
+    error_report(manager, FCONCAT_ERROR_INVALID_ARGS, "repaired");
+    ASSERT_EQ(1, error_get_count(manager));
+
+    error_clear(manager);
+    manager->error_count = MAX_ERRORS + 1;
+    error_report(manager, FCONCAT_ERROR_INVALID_ARGS, "ignored");
+    ASSERT_EQ(MAX_ERRORS, error_get_count(manager));
+
+    error_clear(manager);
+    manager->warning_count = -5;
+    warning_report(manager, "repaired warning");
+    ASSERT_EQ(1, warning_get_count(manager));
+
+    manager->warning_count = INT_MAX;
+    warning_report(manager, "saturated warning");
+    ASSERT_EQ(INT_MAX, warning_get_count(manager));
+
+    error_manager_destroy(manager);
+    return 0;
+}
+
 int test_error_main(void)
 {
     tests_run = 0;
@@ -57,6 +85,7 @@ int test_error_main(void)
     TEST_SUITE_BEGIN("ErrorManager Safety");
     RUN_TEST(error_reporting_rejects_null_inputs);
     RUN_TEST(error_reporting_respects_capacity);
+    RUN_TEST(error_reporting_handles_corrupt_counts);
 
     TEST_SUMMARY();
     return TEST_EXIT_CODE();

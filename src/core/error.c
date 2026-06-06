@@ -4,6 +4,50 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <limits.h>
+
+static int error_count_clamped(int count)
+{
+    if (count < 0)
+        return 0;
+    if (count > MAX_ERRORS)
+        return MAX_ERRORS;
+    return count;
+}
+
+static int error_prepare_append_locked(ErrorManager *manager)
+{
+    if (!manager)
+        return -1;
+    if (manager->error_count < 0)
+        manager->error_count = 0;
+    if (manager->error_count >= MAX_ERRORS)
+    {
+        manager->error_count = MAX_ERRORS;
+        return -1;
+    }
+    return 0;
+}
+
+static void warning_count_increment_locked(ErrorManager *manager)
+{
+    if (!manager)
+        return;
+    if (manager->warning_count < 0)
+        manager->warning_count = 0;
+    if (manager->warning_count < INT_MAX)
+        manager->warning_count++;
+}
+
+static void error_context_cleanup(ErrorContext *ctx)
+{
+    if (!ctx)
+        return;
+    free(ctx->message);
+    free(ctx->file);
+    free(ctx->function);
+    memset(ctx, 0, sizeof(*ctx));
+}
 
 ErrorManager *error_manager_create(void)
 {
@@ -28,12 +72,9 @@ void error_manager_destroy(ErrorManager *manager)
     pthread_mutex_lock(&manager->mutex);
 
     // Free all error messages
-    for (int i = 0; i < manager->error_count; i++)
-    {
-        free(manager->errors[i].message);
-        free(manager->errors[i].file);
-        free(manager->errors[i].function);
-    }
+    int error_count = error_count_clamped(manager->error_count);
+    for (int i = 0; i < error_count; i++)
+        error_context_cleanup(&manager->errors[i]);
 
     pthread_mutex_unlock(&manager->mutex);
     pthread_mutex_destroy(&manager->mutex);
@@ -46,7 +87,7 @@ void error_report_context(ErrorManager *manager, FconcatErrorCode code, const ch
         return;
 
     pthread_mutex_lock(&manager->mutex);
-    if (manager->error_count >= MAX_ERRORS)
+    if (error_prepare_append_locked(manager) != 0)
     {
         pthread_mutex_unlock(&manager->mutex);
         return;
@@ -98,7 +139,7 @@ void error_report(ErrorManager *manager, FconcatErrorCode code, const char *form
         return;
 
     pthread_mutex_lock(&manager->mutex);
-    if (manager->error_count >= MAX_ERRORS)
+    if (error_prepare_append_locked(manager) != 0)
     {
         pthread_mutex_unlock(&manager->mutex);
         return;
@@ -143,7 +184,7 @@ void warning_report(ErrorManager *manager, const char *format, ...)
         return;
 
     pthread_mutex_lock(&manager->mutex);
-    manager->warning_count++;
+    warning_count_increment_locked(manager);
     pthread_mutex_unlock(&manager->mutex);
 
     // Print to stderr
@@ -160,7 +201,7 @@ int error_get_count(ErrorManager *manager)
     if (!manager)
         return 0;
     pthread_mutex_lock(&manager->mutex);
-    int count = manager->error_count;
+    int count = error_count_clamped(manager->error_count);
     pthread_mutex_unlock(&manager->mutex);
     return count;
 }
@@ -170,7 +211,7 @@ int warning_get_count(ErrorManager *manager)
     if (!manager)
         return 0;
     pthread_mutex_lock(&manager->mutex);
-    int count = manager->warning_count;
+    int count = manager->warning_count < 0 ? 0 : manager->warning_count;
     pthread_mutex_unlock(&manager->mutex);
     return count;
 }
@@ -183,12 +224,9 @@ void error_clear(ErrorManager *manager)
     pthread_mutex_lock(&manager->mutex);
 
     // Free all error messages
-    for (int i = 0; i < manager->error_count; i++)
-    {
-        free(manager->errors[i].message);
-        free(manager->errors[i].file);
-        free(manager->errors[i].function);
-    }
+    int error_count = error_count_clamped(manager->error_count);
+    for (int i = 0; i < error_count; i++)
+        error_context_cleanup(&manager->errors[i]);
 
     manager->error_count = 0;
     manager->warning_count = 0;
