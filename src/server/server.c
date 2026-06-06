@@ -303,6 +303,9 @@ static int from_hex(char c)
 
 static char *url_decode(const char *value, size_t len)
 {
+    if (!value)
+        return NULL;
+
     char *out = malloc(len + 1);
     if (!out)
         return NULL;
@@ -310,8 +313,13 @@ static char *url_decode(const char *value, size_t len)
     size_t j = 0;
     for (size_t i = 0; i < len; i++)
     {
-        if (value[i] == '%' && i + 2 < len)
+        if (value[i] == '%')
         {
+            if (i + 2 >= len)
+            {
+                free(out);
+                return NULL;
+            }
             int hi = from_hex(value[i + 1]);
             int lo = from_hex(value[i + 2]);
             if (hi < 0 || lo < 0)
@@ -351,7 +359,7 @@ static void request_options_cleanup(RequestOptions *opts)
 
 static int append_request_string(char ***items, int *count, int max_count, char *value)
 {
-    if (*count >= max_count)
+    if (!items || !count || !value || *count < 0 || max_count < 0 || *count >= max_count)
         return -1;
     char **new_items = realloc(*items, (size_t)(*count + 1) * sizeof(char *));
     if (!new_items)
@@ -364,6 +372,9 @@ static int append_request_string(char ***items, int *count, int max_count, char 
 
 static int parse_binary_value(const char *value, BinaryHandling *out)
 {
+    if (!value || !out)
+        return -1;
+
     if (strcmp(value, "skip") == 0)
         *out = BINARY_SKIP;
     else if (strcmp(value, "include") == 0)
@@ -377,6 +388,9 @@ static int parse_binary_value(const char *value, BinaryHandling *out)
 
 static int parse_symlink_value(const char *value, SymlinkHandling *out)
 {
+    if (!value || !out)
+        return -1;
+
     if (strcmp(value, "skip") == 0)
         *out = SYMLINK_SKIP;
     else if (strcmp(value, "follow") == 0)
@@ -392,6 +406,9 @@ static int parse_symlink_value(const char *value, SymlinkHandling *out)
 
 static int parse_concat_query(const char *query, const ResolvedConfig *base, RequestOptions *opts)
 {
+    if (!base || !opts)
+        return -1;
+
     memset(opts, 0, sizeof(*opts));
     opts->binary_handling = base->binary_handling;
     opts->symlink_handling = base->symlink_handling;
@@ -772,7 +789,10 @@ static int prepare_allowed_roots(ServerRuntime *runtime)
     {
         char *real = realpath(runtime->config->allow_roots[i], NULL);
         if (!real)
+        {
+            free_allowed_roots(runtime);
             return -1;
+        }
         runtime->allowed_roots[runtime->allowed_root_count++] = real;
     }
     return 0;

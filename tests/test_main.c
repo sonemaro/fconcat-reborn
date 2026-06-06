@@ -15,6 +15,7 @@
 extern int test_memory_main(void);
 extern int test_filter_main(void);
 extern int test_config_main(void);
+extern int test_output_main(void);
 extern int test_traversal_main(void);
 
 static int run_unit_tests(void)
@@ -36,6 +37,10 @@ static int run_unit_tests(void)
     /* Config tests */
     fprintf(stderr, "\n>>> Running config tests...\n");
     failed += test_config_main();
+
+    /* Output tests */
+    fprintf(stderr, "\n>>> Running output tests...\n");
+    failed += test_output_main();
     
     return failed;
 }

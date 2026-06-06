@@ -12,6 +12,7 @@
 
 #include "test_framework.h"
 #include "../../src/filter/filter.h"
+#include "../../src/filter/filter_utils.h"
 #include "../../src/config/config.h"
 #include <string.h>
 #include <stdio.h>
@@ -112,6 +113,16 @@ TEST(get_filename_util_edge_cases)
 {
     ASSERT_STR_EQ("file", get_filename_util("path/to/file"));
     ASSERT_STR_EQ("", get_filename_util("/path/to/"));  // Empty after last /
+    return 0;
+}
+
+TEST(filter_get_basename_mixed_separators)
+{
+    ASSERT_STR_EQ("file.txt", filter_get_basename("/unix/path/file.txt"));
+    ASSERT_STR_EQ("file.txt", filter_get_basename("C:\\windows\\path\\file.txt"));
+    ASSERT_STR_EQ("last.txt", filter_get_basename("/mixed\\path/last.txt"));
+    ASSERT_STR_EQ("last.txt", filter_get_basename("\\mixed/path\\last.txt"));
+    ASSERT_NULL(filter_get_basename(NULL));
     return 0;
 }
 
@@ -348,6 +359,7 @@ int test_filter_main(void)
     RUN_TEST(get_filename_util_basic);
     RUN_TEST(get_filename_util_null_safe);
     RUN_TEST(get_filename_util_edge_cases);
+    RUN_TEST(filter_get_basename_mixed_separators);
     RUN_TEST(get_absolute_path_util_null_safe);
     RUN_TEST(get_absolute_path_util_returns_path);
     

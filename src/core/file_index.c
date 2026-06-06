@@ -3,6 +3,8 @@
 #include "../filter/filter.h"
 #include <dirent.h>
 #include <errno.h>
+#include <limits.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -172,6 +174,25 @@ static int skip_dot_entry(const struct dirent *entry)
            strcmp(entry->d_name, "..") != 0;
 }
 
+static int compare_dir_entries_by_name(const void *left, const void *right)
+{
+    const struct dirent *a = *(const struct dirent *const *)left;
+    const struct dirent *b = *(const struct dirent *const *)right;
+    return strcmp(a->d_name, b->d_name);
+}
+
+static struct dirent *dir_entry_dup(const struct dirent *entry)
+{
+    if (!entry)
+        return NULL;
+
+    struct dirent *copy = malloc(sizeof(*copy));
+    if (!copy)
+        return NULL;
+    memcpy(copy, entry, sizeof(*copy));
+    return copy;
+}
+
 static int read_sorted_directory(const char *path, struct dirent ***entries, int *entry_count)
 {
     if (!path || !entries || !entry_count)
@@ -179,11 +200,75 @@ static int read_sorted_directory(const char *path, struct dirent ***entries, int
 
     *entries = NULL;
     *entry_count = 0;
-    errno = 0;
-    int count = scandir(path, entries, skip_dot_entry, alphasort);
-    if (count < 0)
+
+    DIR *dir = opendir(path);
+    if (!dir)
         return -1;
 
+    struct dirent **list = NULL;
+    int count = 0;
+    int capacity = 0;
+    int saved_errno = 0;
+
+    for (;;)
+    {
+        errno = 0;
+        struct dirent *entry = readdir(dir);
+        if (!entry)
+        {
+            saved_errno = errno;
+            break;
+        }
+
+        if (!skip_dot_entry(entry))
+            continue;
+
+        if (count == capacity)
+        {
+            if (capacity == INT_MAX)
+            {
+                saved_errno = ENOMEM;
+                break;
+            }
+
+            int new_capacity = capacity == 0 ? 64 : capacity * 2;
+            if (new_capacity < capacity || new_capacity > INT_MAX)
+                new_capacity = INT_MAX;
+
+            struct dirent **new_list = realloc(list, (size_t)new_capacity * sizeof(*new_list));
+            if (!new_list)
+            {
+                saved_errno = ENOMEM;
+                break;
+            }
+
+            list = new_list;
+            capacity = new_capacity;
+        }
+
+        list[count] = dir_entry_dup(entry);
+        if (!list[count])
+        {
+            saved_errno = ENOMEM;
+            break;
+        }
+        count++;
+    }
+
+    if (closedir(dir) != 0 && saved_errno == 0)
+        saved_errno = errno;
+
+    if (saved_errno != 0)
+    {
+        dir_entries_free(list, count);
+        errno = saved_errno;
+        return -1;
+    }
+
+    if (count > 1)
+        qsort(list, (size_t)count, sizeof(*list), compare_dir_entries_by_name);
+
+    *entries = list;
     *entry_count = count;
     return 0;
 }
@@ -430,6 +515,7 @@ static void file_index_probe_file(FileIndex *index, const ResolvedConfig *config
 
     size_t read_count = fread(scratch, 1, first_goal, file);
     int read_error = ferror(file);
+    int reached_eof = feof(file);
 
     if (read_count == 0 && info->size > 0)
     {
@@ -446,7 +532,7 @@ static void file_index_probe_file(FileIndex *index, const ResolvedConfig *config
         return;
     }
 
-    if (!read_error && prefix_goal > read_count)
+    if (!read_error && !reached_eof && prefix_goal > read_count)
     {
         size_t want_more = prefix_goal - read_count;
         size_t more = fread(scratch + read_count, 1, want_more, file);

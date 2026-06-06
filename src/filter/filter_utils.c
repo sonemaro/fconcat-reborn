@@ -35,11 +35,11 @@ const char *filter_get_basename(const char *path)
     if (!path)
         return NULL;
 
-    const char *basename = strrchr(path, '/');
+    const char *basename_unix = strrchr(path, '/');
     const char *basename_win = strrchr(path, '\\');
 
-    // Use whichever separator was found last
-    if (basename_win > basename)
+    const char *basename = basename_unix;
+    if (!basename || (basename_win && basename_win > basename))
         basename = basename_win;
 
     return basename ? basename + 1 : path;

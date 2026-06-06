@@ -71,6 +71,17 @@ typedef struct {
 #define HEADER_SIZE (sizeof(AllocationHeader))
 #define CANARY_SIZE (sizeof(uint32_t))  // Tail canary size
 
+static int memory_total_allocation_size(size_t user_size, size_t *total_size)
+{
+    if (!total_size)
+        return -1;
+    if (user_size > SIZE_MAX - HEADER_SIZE - CANARY_SIZE)
+        return -1;
+
+    *total_size = HEADER_SIZE + user_size + CANARY_SIZE;
+    return 0;
+}
+
 // Get user pointer from header
 static inline void *header_to_user(AllocationHeader *header) {
     return (char *)header + HEADER_SIZE;
@@ -81,21 +92,21 @@ static inline AllocationHeader *user_to_header(void *ptr) {
     return (AllocationHeader *)((char *)ptr - HEADER_SIZE);
 }
 
-// Get tail canary pointer from header (placed after user data)
-static inline uint32_t *get_tail_canary(AllocationHeader *header) {
-    return (uint32_t *)((char *)header + HEADER_SIZE + header->size);
+// Get tail canary byte location from header (placed after user data)
+static inline unsigned char *get_tail_canary(AllocationHeader *header) {
+    return (unsigned char *)header + HEADER_SIZE + header->size;
 }
 
 // Write tail canary value
 static inline void write_tail_canary(AllocationHeader *header) {
-    uint32_t *canary = get_tail_canary(header);
-    *canary = g_memory_canary;
+    memcpy(get_tail_canary(header), &g_memory_canary, sizeof(g_memory_canary));
 }
 
 // Verify tail canary (returns 1 if valid, 0 if corrupted)
 static inline int verify_tail_canary(AllocationHeader *header) {
-    uint32_t *canary = get_tail_canary(header);
-    return (*canary == g_memory_canary);
+    uint32_t canary = 0;
+    memcpy(&canary, get_tail_canary(header), sizeof(canary));
+    return canary == g_memory_canary;
 }
 
 #define SMALL_BUFFER_SIZE 4096   // 4KB
@@ -343,9 +354,13 @@ void *memory_alloc(MemoryManager *manager, size_t size)
 {
     // Ensure magic is initialized
     init_memory_magic();
+
+    size_t total_size = 0;
+    if (memory_total_allocation_size(size, &total_size) != 0)
+        return NULL;
     
     // Allocate with header + user data + tail canary
-    AllocationHeader *header = (AllocationHeader *)malloc(HEADER_SIZE + size + CANARY_SIZE);
+    AllocationHeader *header = (AllocationHeader *)malloc(total_size);
     if (!header)
         return NULL;
 
@@ -399,8 +414,12 @@ void *memory_realloc(MemoryManager *manager, void *ptr, size_t size)
     
     size_t old_size = old_header->size;
 
+    size_t total_size = 0;
+    if (memory_total_allocation_size(size, &total_size) != 0)
+        return NULL;
+
     // Reallocate with header + new size + tail canary
-    AllocationHeader *new_header = (AllocationHeader *)realloc(old_header, HEADER_SIZE + size + CANARY_SIZE);
+    AllocationHeader *new_header = (AllocationHeader *)realloc(old_header, total_size);
     if (!new_header)
         return NULL;
 
@@ -531,6 +550,9 @@ void memory_release_buffer(MemoryManager *manager, char *buffer)
 // Stream buffer implementation
 StreamBuffer *stream_buffer_create(MemoryManager *manager, size_t initial_size)
 {
+    if (initial_size == 0)
+        initial_size = 1;
+
     StreamBuffer *buffer = memory_alloc(manager, sizeof(StreamBuffer));
     if (!buffer)
         return NULL;

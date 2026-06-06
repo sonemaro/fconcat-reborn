@@ -50,9 +50,17 @@ extern "C"
     // Memory management functions
     MemoryManager *memory_manager_create(void);
     void memory_manager_destroy(MemoryManager *manager);
-    void *memory_alloc(MemoryManager *manager, size_t size);
+#if defined(__clang_analyzer__)
+#define FCONCAT_ANALYZER_MALLOC __attribute__((ownership_returns(malloc)))
+#define FCONCAT_ANALYZER_FREE(ptr_index) __attribute__((ownership_takes(malloc, ptr_index)))
+#else
+#define FCONCAT_ANALYZER_MALLOC
+#define FCONCAT_ANALYZER_FREE(ptr_index)
+#endif
+
+    void *memory_alloc(MemoryManager *manager, size_t size) FCONCAT_ANALYZER_MALLOC;
     void *memory_realloc(MemoryManager *manager, void *ptr, size_t size);
-    void memory_free(MemoryManager *manager, void *ptr);
+    void memory_free(MemoryManager *manager, void *ptr) FCONCAT_ANALYZER_FREE(2);
     MemoryStats memory_get_stats(MemoryManager *manager);
     void memory_enable_tracking(MemoryManager *manager, int enable);
     char *memory_get_buffer(MemoryManager *manager, size_t size);
@@ -72,6 +80,9 @@ extern "C"
     int stream_buffer_write(StreamBuffer *buffer, const char *data, size_t size);
     int stream_buffer_flush(StreamBuffer *buffer);
     void stream_buffer_destroy(StreamBuffer *buffer);
+
+#undef FCONCAT_ANALYZER_MALLOC
+#undef FCONCAT_ANALYZER_FREE
 
 #ifdef __cplusplus
 }

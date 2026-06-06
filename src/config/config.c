@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+static int config_value_set_string_checked(ConfigValue *value, const char *str);
+
 static int config_layer_init(ConfigLayer *layer, ConfigSource source, int priority)
 {
     if (!layer)
@@ -36,6 +38,13 @@ static int parse_positive_int(const char *value, int min, int max, int *out)
 {
     if (!value || !out)
         return -1;
+    if (value[0] == '\0')
+        return -1;
+    for (const char *p = value; *p; p++)
+    {
+        if (*p < '0' || *p > '9')
+            return -1;
+    }
 
     errno = 0;
     char *end = NULL;
@@ -77,6 +86,8 @@ static int add_or_set_int(ConfigLayer *layer, const char *key, int value)
             return -1;
         existing = config_layer_get_value(layer, key);
     }
+    if (!existing)
+        return -1;
     config_value_set_int(existing, value);
     return 0;
 }
@@ -90,6 +101,8 @@ static int add_or_set_bool(ConfigLayer *layer, const char *key, bool value)
             return -1;
         existing = config_layer_get_value(layer, key);
     }
+    if (!existing)
+        return -1;
     config_value_set_bool(existing, value);
     return 0;
 }
@@ -103,8 +116,9 @@ static int add_or_set_string(ConfigLayer *layer, const char *key, const char *va
             return -1;
         existing = config_layer_get_value(layer, key);
     }
-    config_value_set_string(existing, value);
-    return existing->value.string_value || !value ? 0 : -1;
+    if (!existing)
+        return -1;
+    return config_value_set_string_checked(existing, value);
 }
 
 static int append_indexed_string(ConfigLayer *layer, const char *count_key,
@@ -416,6 +430,9 @@ int config_load_cli(ConfigManager *manager, int argc, char *argv[])
 static char **resolve_string_array(ConfigManager *manager, const char *count_key,
                                    const char *item_prefix, int *out_count)
 {
+    if (!manager || !count_key || !item_prefix || !out_count)
+        return NULL;
+
     int count = config_get_int(manager, count_key);
     *out_count = 0;
     if (count <= 0)
@@ -445,6 +462,13 @@ fail:
     for (int i = 0; i < count; i++)
         free(items[i]);
     free(items);
+    return NULL;
+}
+
+static ResolvedConfig *config_resolve_fail(ConfigManager *manager, ResolvedConfig *config)
+{
+    resolved_config_cleanup(config);
+    pthread_mutex_unlock(&manager->mutex);
     return NULL;
 }
 
@@ -483,32 +507,20 @@ ResolvedConfig *config_resolve(ConfigManager *manager)
 
     const char *listen = config_get_string(manager, "listen");
     if (parse_listen_value(listen ? listen : "127.0.0.1:8080", &config->listen_host, &config->listen_port) != 0)
-    {
-        pthread_mutex_unlock(&manager->mutex);
-        return NULL;
-    }
+        return config_resolve_fail(manager, config);
 
     if ((input && !config->input_directory) || (output && !config->output_file) ||
         (token && !config->auth_token) ||
         (config_get_int(manager, "include_count") > 0 && !config->include_patterns) ||
         (config_get_int(manager, "exclude_count") > 0 && !config->exclude_patterns) ||
         (config_get_int(manager, "allow_root_count") > 0 && !config->allow_roots))
-    {
-        pthread_mutex_unlock(&manager->mutex);
-        return NULL;
-    }
+        return config_resolve_fail(manager, config);
 
     if (config->mode == FCONCAT_MODE_BATCH && (!config->input_directory || !config->output_file))
-    {
-        pthread_mutex_unlock(&manager->mutex);
-        return NULL;
-    }
+        return config_resolve_fail(manager, config);
 
     if (config->mode == FCONCAT_MODE_SERVER && config->allow_root_count <= 0)
-    {
-        pthread_mutex_unlock(&manager->mutex);
-        return NULL;
-    }
+        return config_resolve_fail(manager, config);
 
     pthread_mutex_unlock(&manager->mutex);
     return config;
@@ -595,13 +607,26 @@ void config_value_cleanup(ConfigValue *value)
     memset(value, 0, sizeof(*value));
 }
 
-void config_value_set_string(ConfigValue *value, const char *str)
+static int config_value_set_string_checked(ConfigValue *value, const char *str)
 {
     if (!value || value->type != CONFIG_TYPE_STRING)
-        return;
+        return -1;
 
+    char *copy = NULL;
+    if (str)
+    {
+        copy = strdup(str);
+        if (!copy)
+            return -1;
+    }
     free(value->value.string_value);
-    value->value.string_value = str ? strdup(str) : NULL;
+    value->value.string_value = copy;
+    return 0;
+}
+
+void config_value_set_string(ConfigValue *value, const char *str)
+{
+    (void)config_value_set_string_checked(value, str);
 }
 
 void config_value_set_int(ConfigValue *value, int val)

@@ -64,15 +64,19 @@ char *get_relative_path_util(const char *base_dir, const char *target_path)
     if (base_len > 0 && abs_base[base_len - 1] != PATH_SEP)
     {
         char *temp = malloc(base_len + 2);
-        if (temp)
+        if (!temp)
         {
-            strcpy(temp, abs_base);
-            temp[base_len] = PATH_SEP;
-            temp[base_len + 1] = '\0';
             free(abs_base);
-            abs_base = temp;
-            base_len++;
+            free(abs_target);
+            return NULL;
         }
+
+        strcpy(temp, abs_base);
+        temp[base_len] = PATH_SEP;
+        temp[base_len + 1] = '\0';
+        free(abs_base);
+        abs_base = temp;
+        base_len++;
     }
 
     char *result = NULL;
@@ -191,17 +195,17 @@ static int add_output_file_exclusion(FilterEngine *engine, const ResolvedConfig 
     if (input_len > 0 && abs_input[input_len - 1] != PATH_SEP)
     {
         normalized_input = malloc(input_len + 2);
-        if (normalized_input)
+        if (!normalized_input)
         {
-            strcpy(normalized_input, abs_input);
-            normalized_input[input_len] = PATH_SEP;
-            normalized_input[input_len + 1] = '\0';
-            input_len++;
+            free(abs_input);
+            free(abs_output);
+            return -1;
         }
-        else
-        {
-            normalized_input = abs_input;
-        }
+
+        strcpy(normalized_input, abs_input);
+        normalized_input[input_len] = PATH_SEP;
+        normalized_input[input_len + 1] = '\0';
+        input_len++;
     }
 
     bool output_inside_input = (strncmp(abs_output, normalized_input, input_len) == 0);

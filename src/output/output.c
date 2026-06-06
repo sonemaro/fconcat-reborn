@@ -2,6 +2,7 @@
 #include "../core/context.h"
 #include <errno.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -166,7 +167,7 @@ static int buffered_sink_flush(OutputSink *sink)
 static int buffered_sink_write(OutputSink *sink, const char *data, size_t size)
 {
     BufferedOutputSink *buffered = (BufferedOutputSink *)sink;
-    if (!buffered || !buffered->downstream || !data || buffered->closed)
+    if (!buffered || !buffered->downstream || !data || buffered->closed || buffered->capacity == 0)
         return -1;
 
     if (size == 0)
@@ -188,6 +189,8 @@ static int buffered_sink_write(OutputSink *sink, const char *data, size_t size)
         if (available == 0)
         {
             if (buffered_sink_drain(buffered, 0) != 0)
+                return -1;
+            if (buffered->capacity == 0)
                 return -1;
             available = buffered->capacity;
         }
@@ -241,6 +244,8 @@ int buffered_output_sink_init(BufferedOutputSink *sink, OutputSink *downstream,
 
     if (capacity == 0)
         capacity = OUTPUT_DEFAULT_BUFFER_SIZE;
+    if (capacity > SIZE_MAX - 1)
+        return -1;
 
     memset(sink, 0, sizeof(*sink));
     sink->buffer = malloc(capacity);
@@ -349,12 +354,14 @@ int text_begin_document(FconcatContext *ctx)
 
 int text_begin_structure(FconcatContext *ctx)
 {
+    if (!ctx || !ctx->write_output)
+        return -1;
     return ctx->write_output(ctx, "Directory Structure:\n==================\n\n", 0);
 }
 
 int text_write_directory(FconcatContext *ctx, const char *path, int level)
 {
-    if (!ctx || !path)
+    if (!ctx || !ctx->write_output || !path || level < 0)
         return -1;
 
     size_t indent = (size_t)level * 2;
@@ -382,7 +389,7 @@ int text_write_directory(FconcatContext *ctx, const char *path, int level)
 
 int text_write_file_entry(FconcatContext *ctx, const char *path, FileInfo *info)
 {
-    if (!ctx || !path)
+    if (!ctx || !ctx->write_output || !path || ctx->current_directory_level < 0)
         return -1;
 
     size_t indent = (size_t)ctx->current_directory_level * 2;
@@ -448,12 +455,14 @@ int text_end_structure(FconcatContext *ctx)
 
 int text_begin_content(FconcatContext *ctx)
 {
+    if (!ctx || !ctx->write_output)
+        return -1;
     return ctx->write_output(ctx, "\nFile Contents:\n=============\n\n", 0);
 }
 
 int text_write_file_header(FconcatContext *ctx, const char *path)
 {
-    if (!ctx || !path)
+    if (!ctx || !ctx->write_output || !path)
         return -1;
 
     size_t path_len = strlen(path);
@@ -474,22 +483,30 @@ int text_write_file_header(FconcatContext *ctx, const char *path)
 
 int text_write_file_chunk(FconcatContext *ctx, const char *data, size_t size)
 {
+    if (!ctx || !ctx->write_output || !data)
+        return -1;
+    if (size == 0)
+        return 0;
     return ctx->write_output(ctx, data, size);
 }
 
 int text_write_file_footer(FconcatContext *ctx)
 {
+    if (!ctx || !ctx->write_output)
+        return -1;
     return ctx->write_output(ctx, "\n\n", 2);
 }
 
 int text_write_binary_placeholder(FconcatContext *ctx)
 {
+    if (!ctx || !ctx->write_output)
+        return -1;
     return ctx->write_output(ctx, "// [Binary file content not displayed]\n", 0);
 }
 
 int text_write_symlink_placeholder(FconcatContext *ctx, const char *full_path)
 {
-    if (!ctx || !full_path)
+    if (!ctx || !ctx->write_output_fmt || !full_path)
         return -1;
 
     char target[2048];
@@ -511,5 +528,9 @@ int text_end_content(FconcatContext *ctx)
 
 int text_end_document(FconcatContext *ctx)
 {
-    return output_sink_flush(((InternalContextState *)ctx->internal_state)->output_sink);
+    if (!ctx || !ctx->internal_state)
+        return -1;
+
+    InternalContextState *internal = (InternalContextState *)ctx->internal_state;
+    return output_sink_flush(internal->output_sink);
 }

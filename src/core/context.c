@@ -664,7 +664,7 @@ void context_vlog(FconcatContext *ctx, LogLevel level, const char *format, va_li
     if (!context_is_log_enabled(ctx, level))
         return;
 
-    const char *level_str = "UNKNOWN";
+    const char *level_str;
     switch (level)
     {
     case LOG_ERROR:
@@ -681,6 +681,9 @@ void context_vlog(FconcatContext *ctx, LogLevel level, const char *format, va_li
         break;
     case LOG_TRACE:
         level_str = "TRACE";
+        break;
+    default:
+        level_str = "UNKNOWN";
         break;
     }
 

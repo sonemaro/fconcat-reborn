@@ -857,8 +857,7 @@ TEST(integ_large_text_file_streaming)
     create_large_text_file("large/big.txt", 200 * 1024);
 
     char cmdout[1024];
-    char *content = malloc(260 * 1024);
-    ASSERT_NOT_NULL(content);
+    char content[260 * 1024];
     char input_path[TEST_PATH_MAX];
     snprintf(input_path, sizeof(input_path), "%s/large", test_root);
 
@@ -868,7 +867,6 @@ TEST(integ_large_text_file_streaming)
     ASSERT_EQ(0, read_output_file(get_output_path(), content, 260 * 1024));
     ASSERT_TRUE(output_contains(content, "big.txt"));
     ASSERT_TRUE(output_contains(content, "TAIL-MARKER"));
-    free(content);
 
     return 0;
 }
@@ -881,10 +879,8 @@ TEST(integ_prefix_cache_disabled_matches_default)
     create_large_text_file("prefix-cache/big.txt", 80 * 1024);
 
     char cmdout[2048];
-    char *default_content = malloc(140 * 1024);
-    char *disabled_content = malloc(140 * 1024);
-    ASSERT_NOT_NULL(default_content);
-    ASSERT_NOT_NULL(disabled_content);
+    char default_content[140 * 1024];
+    char disabled_content[140 * 1024];
 
     char input_path[TEST_PATH_MAX];
     char output_default[TEST_PATH_MAX];
@@ -904,8 +900,6 @@ TEST(integ_prefix_cache_disabled_matches_default)
     ASSERT_EQ(0, read_output_file(output_disabled, disabled_content, 140 * 1024));
     ASSERT_STR_EQ(default_content, disabled_content);
 
-    free(default_content);
-    free(disabled_content);
     return 0;
 }
 
@@ -1246,6 +1240,8 @@ TEST(integ_server_malformed_query_cleanup)
     char response[8192];
     int malformed_result = http_get_local(port, "/concat?root=%zz", response, sizeof(response));
     int malformed_is_bad_request = output_contains(response, "HTTP/1.1 400 Bad Request");
+    int truncated_result = http_get_local(port, "/concat?root=%", response, sizeof(response));
+    int truncated_is_bad_request = output_contains(response, "HTTP/1.1 400 Bad Request");
 
     int health_result = http_get_local(port, "/healthz", response, sizeof(response));
     int health_is_ok = output_contains(response, "HTTP/1.1 200 OK");
@@ -1253,6 +1249,8 @@ TEST(integ_server_malformed_query_cleanup)
 
     ASSERT_EQ(0, malformed_result);
     ASSERT_TRUE(malformed_is_bad_request);
+    ASSERT_EQ(0, truncated_result);
+    ASSERT_TRUE(truncated_is_bad_request);
     ASSERT_EQ(0, health_result);
     ASSERT_EQ(0, server_exit);
     ASSERT_TRUE(health_is_ok);

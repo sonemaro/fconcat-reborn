@@ -14,6 +14,7 @@
 #include "test_framework.h"
 #include "../../src/core/memory.h"
 #include "../../src/core/types.h"
+#include <stdint.h>
 #include <string.h>
 
 /* =========================================================================
@@ -78,14 +79,15 @@ TEST(memory_alloc_tracks_statistics)
     ASSERT_NOT_NULL(ptr);
     
     MemoryStats stats = memory_get_stats(mgr);
-    ASSERT_EQ(100, stats.total_allocated);
-    ASSERT_EQ(100, stats.current_usage);
-    ASSERT_EQ(100, stats.peak_usage);
-    ASSERT_EQ(1, stats.allocation_count);
-    ASSERT_EQ(0, stats.free_count);
+    int stats_ok = stats.total_allocated == 100 &&
+                   stats.current_usage == 100 &&
+                   stats.peak_usage == 100 &&
+                   stats.allocation_count == 1 &&
+                   stats.free_count == 0;
     
     memory_free(mgr, ptr);
     memory_manager_destroy(mgr);
+    ASSERT_TRUE(stats_ok);
     return 0;
 }
 
@@ -134,6 +136,25 @@ TEST(memory_alloc_null_manager_still_allocates)
     return 0;
 }
 
+TEST(memory_alloc_rejects_overflow_size)
+{
+    MemoryManager *mgr = memory_manager_create();
+    ASSERT_NOT_NULL(mgr);
+
+    void *ptr = memory_alloc(mgr, SIZE_MAX);
+    int ptr_was_null = ptr == NULL;
+    if (ptr)
+        memory_free(mgr, ptr);
+
+    MemoryStats stats = memory_get_stats(mgr);
+    int stats_ok = stats.current_usage == 0 && stats.allocation_count == 0;
+
+    memory_manager_destroy(mgr);
+    ASSERT_TRUE(ptr_was_null);
+    ASSERT_TRUE(stats_ok);
+    return 0;
+}
+
 TEST(memory_multiple_allocations_track_correctly)
 {
     MemoryManager *mgr = memory_manager_create();
@@ -143,23 +164,31 @@ TEST(memory_multiple_allocations_track_correctly)
     void *p2 = memory_alloc(mgr, 200);
     void *p3 = memory_alloc(mgr, 300);
     
-    ASSERT_NOT_NULL(p1);
-    ASSERT_NOT_NULL(p2);
-    ASSERT_NOT_NULL(p3);
+    int allocations_ok = p1 && p2 && p3;
+    if (!allocations_ok)
+    {
+        memory_free(mgr, p1);
+        memory_free(mgr, p2);
+        memory_free(mgr, p3);
+        memory_manager_destroy(mgr);
+        ASSERT_TRUE(allocations_ok);
+    }
     
     MemoryStats stats = memory_get_stats(mgr);
-    ASSERT_EQ(600, stats.current_usage);
-    ASSERT_EQ(600, stats.total_allocated);
-    ASSERT_EQ(3, stats.allocation_count);
+    int initial_stats_ok = stats.current_usage == 600 &&
+                           stats.total_allocated == 600 &&
+                           stats.allocation_count == 3;
     
     memory_free(mgr, p2);
     stats = memory_get_stats(mgr);
-    ASSERT_EQ(400, stats.current_usage);  // 600 - 200
-    ASSERT_EQ(600, stats.peak_usage);     // Peak unchanged
+    int after_free_stats_ok = stats.current_usage == 400 &&
+                              stats.peak_usage == 600;
     
     memory_free(mgr, p1);
     memory_free(mgr, p3);
     memory_manager_destroy(mgr);
+    ASSERT_TRUE(initial_stats_ok);
+    ASSERT_TRUE(after_free_stats_ok);
     return 0;
 }
 
@@ -222,6 +251,27 @@ TEST(memory_realloc_zero_size_frees)
     MemoryStats stats = memory_get_stats(mgr);
     ASSERT_EQ(0, stats.current_usage);
     
+    memory_manager_destroy(mgr);
+    return 0;
+}
+
+TEST(memory_realloc_rejects_overflow_size)
+{
+    MemoryManager *mgr = memory_manager_create();
+    ASSERT_NOT_NULL(mgr);
+
+    char *ptr = memory_alloc(mgr, 16);
+    ASSERT_NOT_NULL(ptr);
+    memset(ptr, 'A', 16);
+
+    void *too_large = memory_realloc(mgr, ptr, SIZE_MAX);
+    ASSERT_NULL(too_large);
+    ASSERT_EQ('A', ptr[0]);
+
+    MemoryStats stats = memory_get_stats(mgr);
+    ASSERT_EQ(16, stats.current_usage);
+
+    memory_free(mgr, ptr);
     memory_manager_destroy(mgr);
     return 0;
 }
@@ -364,6 +414,24 @@ TEST(stream_buffer_grows_automatically)
     return 0;
 }
 
+TEST(stream_buffer_zero_initial_size_can_grow)
+{
+    MemoryManager *mgr = memory_manager_create();
+    ASSERT_NOT_NULL(mgr);
+
+    StreamBuffer *buf = stream_buffer_create(mgr, 0);
+    ASSERT_NOT_NULL(buf);
+    ASSERT_TRUE(buf->capacity > 0);
+
+    ASSERT_EQ(0, stream_buffer_write(buf, "x", 1));
+    ASSERT_EQ(1, buf->size);
+    ASSERT_MEM_EQ("x", buf->data, 1);
+
+    stream_buffer_destroy(buf);
+    memory_manager_destroy(mgr);
+    return 0;
+}
+
 TEST(stream_buffer_rejects_null_inputs)
 {
     MemoryManager *mgr = memory_manager_create();
@@ -408,10 +476,11 @@ TEST(memory_enable_tracking_can_disable)
     ASSERT_NOT_NULL(ptr);
     
     MemoryStats stats = memory_get_stats(mgr);
-    ASSERT_EQ(0, stats.allocation_count);  // Should not be tracked
+    int stats_ok = stats.allocation_count == 0;
     
     memory_free(mgr, ptr);
     memory_manager_destroy(mgr);
+    ASSERT_TRUE(stats_ok);
     return 0;
 }
 
@@ -444,12 +513,14 @@ int test_memory_main(void)
     RUN_TEST(memory_free_updates_statistics);
     RUN_TEST(memory_free_null_is_safe);
     RUN_TEST(memory_alloc_null_manager_still_allocates);
+    RUN_TEST(memory_alloc_rejects_overflow_size);
     RUN_TEST(memory_multiple_allocations_track_correctly);
     
     TEST_SUITE_BEGIN("Reallocation");
     RUN_TEST(memory_realloc_grows_allocation);
     RUN_TEST(memory_realloc_null_ptr_acts_like_alloc);
     RUN_TEST(memory_realloc_zero_size_frees);
+    RUN_TEST(memory_realloc_rejects_overflow_size);
     
     TEST_SUITE_BEGIN("Buffer Pool");
     RUN_TEST(buffer_pool_create_returns_valid_pointer);
@@ -462,6 +533,7 @@ int test_memory_main(void)
     RUN_TEST(stream_buffer_create_returns_valid_pointer);
     RUN_TEST(stream_buffer_write_appends_data);
     RUN_TEST(stream_buffer_grows_automatically);
+    RUN_TEST(stream_buffer_zero_initial_size_can_grow);
     RUN_TEST(stream_buffer_rejects_null_inputs);
     RUN_TEST(stream_buffer_destroy_null_is_safe);
     

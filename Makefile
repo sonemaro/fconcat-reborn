@@ -37,6 +37,7 @@ TEST_SOURCES := \
 	tests/unit/test_config.c \
 	tests/unit/test_filter.c \
 	tests/unit/test_memory.c \
+	tests/unit/test_output.c \
 	tests/integration/test_traversal.c
 
 OBJECTS := $(SOURCES:.c=.o)
@@ -52,9 +53,10 @@ SANITIZER_LDFLAGS := -fsanitize=address,undefined \
 	-Wl,--wrap=free \
 	-Wl,--wrap=strdup \
 	-Wl,--wrap=realpath
-SANITIZER_ENV := ASAN_OPTIONS=halt_on_error=1:abort_on_error=0
+SANITIZER_ENV := ASAN_OPTIONS=halt_on_error=1:abort_on_error=0 UBSAN_OPTIONS=halt_on_error=1:abort_on_error=0:print_stacktrace=1
+ANALYZE_OUTPUT ?= $(CURDIR)/build/scan-build
 
-.PHONY: all test sanitize-test release bench bench-real install uninstall clean
+.PHONY: all test sanitize-test analyze release bench bench-real install uninstall clean
 
 all: $(TARGET)
 
@@ -79,6 +81,12 @@ sanitize-test:
 		EXTRA_SOURCES="tests/leak_guard.c" \
 		$(TARGET) $(TEST_TARGET)
 	$(SANITIZER_ENV) ./$(TEST_TARGET)
+
+analyze:
+	command -v scan-build >/dev/null
+	$(MAKE) clean
+	scan-build --status-bugs -o "$(ANALYZE_OUTPUT)" $(MAKE) -B $(TARGET) $(TEST_TARGET)
+	./$(TEST_TARGET)
 
 release:
 	$(MAKE) clean
