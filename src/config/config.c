@@ -33,8 +33,10 @@ static int config_layer_values_are_valid(const ConfigLayer *layer)
 
 static int config_layer_cleanup_count(const ConfigLayer *layer)
 {
-    if (!config_layer_value_storage_is_safe(layer) || layer->value_count < 0)
+    if (!config_layer_value_storage_is_safe(layer))
         return 0;
+    if (layer->value_count < 0)
+        return layer->value_capacity;
     return layer->value_count <= layer->value_capacity ? layer->value_count : layer->value_capacity;
 }
 

@@ -57,6 +57,18 @@ TEST(config_manager_destroy_handles_corrupt_layer_count)
     return 0;
 }
 
+TEST(config_manager_destroy_cleans_values_with_corrupt_negative_value_count)
+{
+    ConfigManager *mgr = config_manager_create();
+    ASSERT_NOT_NULL(mgr);
+    ASSERT_EQ(0, config_load_defaults(mgr));
+    ASSERT_TRUE(mgr->layers[0].value_count > 0);
+
+    mgr->layers[0].value_count = -1;
+    config_manager_destroy(mgr);
+    return 0;
+}
+
 /* =========================================================================
  * ConfigValue Tests
  * ========================================================================= */
@@ -556,6 +568,7 @@ int test_config_main(void)
     RUN_TEST(config_manager_destroy_null_is_safe);
     RUN_TEST(config_manager_has_resolved_config);
     RUN_TEST(config_manager_destroy_handles_corrupt_layer_count);
+    RUN_TEST(config_manager_destroy_cleans_values_with_corrupt_negative_value_count);
     
     TEST_SUITE_BEGIN("ConfigValue Operations");
     RUN_TEST(config_value_init_string);
