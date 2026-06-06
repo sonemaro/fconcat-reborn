@@ -1161,10 +1161,21 @@ TEST(integ_oom_cleanup_under_leak_guard)
     snprintf(input_path, sizeof(input_path), "%s/oom", test_root);
     snprintf(output_path, sizeof(output_path), "%s/oom-out.txt", test_root);
 
-    const char *fail_points[] = {"0", "8", "32"};
-    for (size_t i = 0; i < sizeof(fail_points) / sizeof(fail_points[0]); i++) {
+    for (int fail_after = 0; fail_after <= 64; fail_after++) {
         char env[128];
-        snprintf(env, sizeof(env), "LEAK_GUARD_FAIL_AFTER=%s", fail_points[i]);
+        snprintf(env, sizeof(env), "LEAK_GUARD_FAIL_AFTER=%d", fail_after);
+
+        char output[8192];
+        int exit_code = run_fconcat_env(output, sizeof(output), env,
+                                        "'%s' '%s'", input_path, output_path);
+        ASSERT_NE(23, exit_code);
+        ASSERT_FALSE(output_contains(output, "LEAK_GUARD: FAILED"));
+    }
+
+    const int late_fail_points[] = {96, 128, 192};
+    for (size_t i = 0; i < sizeof(late_fail_points) / sizeof(late_fail_points[0]); i++) {
+        char env[128];
+        snprintf(env, sizeof(env), "LEAK_GUARD_FAIL_AFTER=%d", late_fail_points[i]);
 
         char output[8192];
         int exit_code = run_fconcat_env(output, sizeof(output), env,
