@@ -10,6 +10,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifdef FCONCAT_LEAK_GUARD
+extern int file_index_test_dir_stack_destroy_corrupt_size(void);
+extern int file_index_test_dir_stack_rejects_corrupt_state(void);
+#endif
+
 static int file_index_test_sink_write(OutputSink *sink, const char *data, size_t size)
 {
     (void)sink;
@@ -193,6 +198,17 @@ TEST(file_index_build_indexes_sorted_tree)
     return 0;
 }
 
+TEST(file_index_dir_stack_handles_corrupt_state)
+{
+#ifndef FCONCAT_LEAK_GUARD
+    return 0;
+#else
+    ASSERT_EQ(0, file_index_test_dir_stack_destroy_corrupt_size());
+    ASSERT_EQ(0, file_index_test_dir_stack_rejects_corrupt_state());
+    return 0;
+#endif
+}
+
 int test_file_index_main(void)
 {
     tests_run = 0;
@@ -204,6 +220,7 @@ int test_file_index_main(void)
     RUN_TEST(file_index_create_initializes_empty_index);
     RUN_TEST(file_index_build_rejects_null_inputs);
     RUN_TEST(file_index_build_indexes_sorted_tree);
+    RUN_TEST(file_index_dir_stack_handles_corrupt_state);
 
     TEST_SUMMARY();
     return TEST_EXIT_CODE();

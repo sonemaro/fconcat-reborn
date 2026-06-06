@@ -322,12 +322,37 @@ static DirStack *dir_stack_create(void)
     return stack;
 }
 
+static int dir_stack_capacity_is_valid(const DirStack *stack)
+{
+    return stack &&
+           stack->entries &&
+           stack->capacity > 0 &&
+           stack->capacity <= (int)DIR_STACK_INITIAL_CAPACITY;
+}
+
+static int dir_stack_size_is_valid(const DirStack *stack)
+{
+    return dir_stack_capacity_is_valid(stack) &&
+           stack->size >= 0 &&
+           stack->size <= stack->capacity;
+}
+
+static int dir_stack_cleanup_size(const DirStack *stack)
+{
+    if (!stack || !stack->entries)
+        return 0;
+    if (dir_stack_size_is_valid(stack))
+        return stack->size;
+    return (int)DIR_STACK_INITIAL_CAPACITY;
+}
+
 static void dir_stack_destroy(DirStack *stack)
 {
     if (!stack)
         return;
 
-    for (int i = 0; i < stack->size; i++)
+    int cleanup_size = dir_stack_cleanup_size(stack);
+    for (int i = 0; i < cleanup_size; i++)
         dir_entries_free(stack->entries[i].entries, stack->entries[i].entry_count);
     free(stack->entries);
     free(stack);
@@ -337,7 +362,7 @@ static int dir_stack_push(DirStack *stack, const char *path, const char *relativ
                           struct dirent **entries, int entry_count,
                           int level, int visited_tracked)
 {
-    if (!stack || !path || !relative_path || entry_count < 0 ||
+    if (!dir_stack_size_is_valid(stack) || !path || !relative_path || entry_count < 0 ||
         (!entries && entry_count > 0) || stack->size >= stack->capacity)
         return -1;
 
@@ -361,14 +386,14 @@ static int dir_stack_push(DirStack *stack, const char *path, const char *relativ
 
 static DirStackEntry *dir_stack_peek(DirStack *stack)
 {
-    if (!stack || stack->size == 0)
+    if (!dir_stack_size_is_valid(stack) || stack->size == 0)
         return NULL;
     return &stack->entries[stack->size - 1];
 }
 
 static void dir_stack_pop(DirStack *stack)
 {
-    if (stack && stack->size > 0)
+    if (dir_stack_size_is_valid(stack) && stack->size > 0)
     {
         DirStackEntry *entry = &stack->entries[stack->size - 1];
         dir_entries_free(entry->entries, entry->entry_count);
@@ -716,6 +741,13 @@ int file_index_build(FileIndex *index,
                         config->symlink_handling != SYMLINK_FOLLOW;
     while (stack->size > 0)
     {
+        if (!dir_stack_size_is_valid(stack))
+        {
+            ctx->error(ctx, "Directory stack state is corrupt");
+            result = -1;
+            break;
+        }
+
         if (should_stop && should_stop(user_data))
         {
             result = -1;
@@ -723,6 +755,13 @@ int file_index_build(FileIndex *index,
         }
 
         DirStackEntry *current = dir_stack_peek(stack);
+        if (!current)
+        {
+            ctx->error(ctx, "Directory stack state is corrupt");
+            result = -1;
+            break;
+        }
+
         if (current->next_entry >= current->entry_count)
         {
             if (current->visited_tracked)
@@ -1003,6 +1042,12 @@ int file_index_build(FileIndex *index,
         free(resolved_path);
     }
 
+    if (result == 0 && !dir_stack_size_is_valid(stack))
+    {
+        ctx->error(ctx, "Directory stack state is corrupt");
+        result = -1;
+    }
+
     free(scratch);
     dir_stack_destroy(stack);
     return result;
@@ -1029,3 +1074,68 @@ size_t file_index_prefix_budget(const FileIndex *index)
 {
     return index ? index->prefix_budget : 0;
 }
+
+#ifdef FCONCAT_LEAK_GUARD
+static int file_index_test_seed_dir_stack_entry(DirStack *stack)
+{
+    if (!stack || !stack->entries)
+        return -1;
+
+    stack->entries[0].entries = calloc(1, sizeof(*stack->entries[0].entries));
+    if (!stack->entries[0].entries)
+        return -1;
+
+    stack->entries[0].entries[0] = calloc(1, sizeof(*stack->entries[0].entries[0]));
+    if (!stack->entries[0].entries[0])
+        return -1;
+
+    stack->entries[0].entry_count = 1;
+    stack->size = 1;
+    return 0;
+}
+
+int file_index_test_dir_stack_destroy_corrupt_size(void)
+{
+    DirStack *stack = dir_stack_create();
+    if (!stack)
+        return -1;
+    if (file_index_test_seed_dir_stack_entry(stack) != 0)
+    {
+        dir_stack_destroy(stack);
+        return -1;
+    }
+    stack->size = -1;
+    dir_stack_destroy(stack);
+
+    stack = dir_stack_create();
+    if (!stack)
+        return -1;
+    if (file_index_test_seed_dir_stack_entry(stack) != 0)
+    {
+        dir_stack_destroy(stack);
+        return -1;
+    }
+    stack->size = (int)DIR_STACK_INITIAL_CAPACITY + 1;
+    dir_stack_destroy(stack);
+
+    return 0;
+}
+
+int file_index_test_dir_stack_rejects_corrupt_state(void)
+{
+    DirStack *stack = dir_stack_create();
+    if (!stack)
+        return -1;
+
+    stack->size = -1;
+    int rejected_negative = dir_stack_push(stack, ".", "", NULL, 0, 0, 0) != 0 &&
+                            dir_stack_peek(stack) == NULL;
+
+    stack->size = (int)DIR_STACK_INITIAL_CAPACITY + 1;
+    int rejected_large = dir_stack_push(stack, ".", "", NULL, 0, 0, 0) != 0 &&
+                         dir_stack_peek(stack) == NULL;
+
+    dir_stack_destroy(stack);
+    return rejected_negative && rejected_large ? 0 : -1;
+}
+#endif
