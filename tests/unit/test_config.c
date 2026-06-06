@@ -380,6 +380,76 @@ TEST(config_resolve_null_manager)
     return 0;
 }
 
+TEST(resolved_config_cleanup_releases_valid_arrays)
+{
+    ResolvedConfig config;
+    memset(&config, 0, sizeof(config));
+
+    config.input_directory = strdup("input");
+    config.output_file = strdup("output.txt");
+    config.listen_host = strdup("127.0.0.1");
+    config.auth_token = strdup("secret");
+    config.exclude_patterns = calloc(1, sizeof(*config.exclude_patterns));
+    config.include_patterns = calloc(1, sizeof(*config.include_patterns));
+    config.allow_roots = calloc(1, sizeof(*config.allow_roots));
+    ASSERT_NOT_NULL(config.input_directory);
+    ASSERT_NOT_NULL(config.output_file);
+    ASSERT_NOT_NULL(config.listen_host);
+    ASSERT_NOT_NULL(config.auth_token);
+    ASSERT_NOT_NULL(config.exclude_patterns);
+    ASSERT_NOT_NULL(config.include_patterns);
+    ASSERT_NOT_NULL(config.allow_roots);
+
+    config.exclude_patterns[0] = strdup("*.tmp");
+    config.include_patterns[0] = strdup("*.c");
+    config.allow_roots[0] = strdup(".");
+    ASSERT_NOT_NULL(config.exclude_patterns[0]);
+    ASSERT_NOT_NULL(config.include_patterns[0]);
+    ASSERT_NOT_NULL(config.allow_roots[0]);
+    config.exclude_count = 1;
+    config.include_count = 1;
+    config.allow_root_count = 1;
+
+    resolved_config_cleanup(&config);
+    ASSERT_NULL(config.input_directory);
+    ASSERT_NULL(config.output_file);
+    ASSERT_NULL(config.listen_host);
+    ASSERT_NULL(config.auth_token);
+    ASSERT_NULL(config.exclude_patterns);
+    ASSERT_NULL(config.include_patterns);
+    ASSERT_NULL(config.allow_roots);
+    ASSERT_EQ(0, config.exclude_count);
+    ASSERT_EQ(0, config.include_count);
+    ASSERT_EQ(0, config.allow_root_count);
+    return 0;
+}
+
+TEST(resolved_config_cleanup_rejects_corrupt_counts)
+{
+    ResolvedConfig config;
+    memset(&config, 0, sizeof(config));
+
+    config.exclude_patterns = calloc(1, sizeof(*config.exclude_patterns));
+    config.include_patterns = calloc(1, sizeof(*config.include_patterns));
+    config.allow_roots = calloc(1, sizeof(*config.allow_roots));
+    ASSERT_NOT_NULL(config.exclude_patterns);
+    ASSERT_NOT_NULL(config.include_patterns);
+    ASSERT_NOT_NULL(config.allow_roots);
+
+    config.exclude_count = -1;
+    config.include_count = MAX_INCLUDES + 1;
+    config.allow_root_count = MAX_ALLOW_ROOTS + 1;
+
+    resolved_config_cleanup(&config);
+    ASSERT_NULL(config.exclude_patterns);
+    ASSERT_NULL(config.include_patterns);
+    ASSERT_NULL(config.allow_roots);
+    ASSERT_EQ(0, config.exclude_count);
+    ASSERT_EQ(0, config.include_count);
+    ASSERT_EQ(0, config.allow_root_count);
+    return 0;
+}
+
 /* =========================================================================
  * Configuration Get Functions Tests
  * ========================================================================= */
@@ -511,6 +581,8 @@ int test_config_main(void)
     RUN_TEST(config_cli_rejects_removed_plugin_option);
     RUN_TEST(config_resolve_server_config);
     RUN_TEST(config_resolve_null_manager);
+    RUN_TEST(resolved_config_cleanup_releases_valid_arrays);
+    RUN_TEST(resolved_config_cleanup_rejects_corrupt_counts);
     
     TEST_SUITE_BEGIN("Configuration Getters");
     RUN_TEST(config_get_string_returns_value);

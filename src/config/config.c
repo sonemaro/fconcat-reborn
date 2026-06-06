@@ -230,6 +230,24 @@ static int parse_listen_value(const char *listen, char **host_out, int *port_out
     return 0;
 }
 
+static void cleanup_resolved_string_array(char ***items, int *count, int max_count)
+{
+    if (!items || !count)
+        return;
+
+    char **values = *items;
+    int cleanup_count = 0;
+    if (values && *count > 0 && *count <= max_count)
+        cleanup_count = *count;
+
+    for (int i = 0; i < cleanup_count; i++)
+        free(values[i]);
+
+    free(values);
+    *items = NULL;
+    *count = 0;
+}
+
 void resolved_config_cleanup(ResolvedConfig *config)
 {
     if (!config)
@@ -237,16 +255,10 @@ void resolved_config_cleanup(ResolvedConfig *config)
 
     free(config->input_directory);
     free(config->output_file);
-    for (int i = 0; i < config->exclude_count; i++)
-        free(config->exclude_patterns[i]);
-    free(config->exclude_patterns);
-    for (int i = 0; i < config->include_count; i++)
-        free(config->include_patterns[i]);
-    free(config->include_patterns);
+    cleanup_resolved_string_array(&config->exclude_patterns, &config->exclude_count, MAX_EXCLUDES);
+    cleanup_resolved_string_array(&config->include_patterns, &config->include_count, MAX_INCLUDES);
     free(config->listen_host);
-    for (int i = 0; i < config->allow_root_count; i++)
-        free(config->allow_roots[i]);
-    free(config->allow_roots);
+    cleanup_resolved_string_array(&config->allow_roots, &config->allow_root_count, MAX_ALLOW_ROOTS);
     free(config->auth_token);
     memset(config, 0, sizeof(*config));
 }
