@@ -392,23 +392,25 @@ TEST(resolved_config_cleanup_releases_valid_arrays)
     config.exclude_patterns = calloc(1, sizeof(*config.exclude_patterns));
     config.include_patterns = calloc(1, sizeof(*config.include_patterns));
     config.allow_roots = calloc(1, sizeof(*config.allow_roots));
-    ASSERT_NOT_NULL(config.input_directory);
-    ASSERT_NOT_NULL(config.output_file);
-    ASSERT_NOT_NULL(config.listen_host);
-    ASSERT_NOT_NULL(config.auth_token);
-    ASSERT_NOT_NULL(config.exclude_patterns);
-    ASSERT_NOT_NULL(config.include_patterns);
-    ASSERT_NOT_NULL(config.allow_roots);
+    config.exclude_count = 1;
+    config.include_count = 1;
+    config.allow_root_count = 1;
+    if (!config.input_directory || !config.output_file || !config.listen_host ||
+        !config.auth_token || !config.exclude_patterns || !config.include_patterns ||
+        !config.allow_roots)
+    {
+        resolved_config_cleanup(&config);
+        return 1;
+    }
 
     config.exclude_patterns[0] = strdup("*.tmp");
     config.include_patterns[0] = strdup("*.c");
     config.allow_roots[0] = strdup(".");
-    ASSERT_NOT_NULL(config.exclude_patterns[0]);
-    ASSERT_NOT_NULL(config.include_patterns[0]);
-    ASSERT_NOT_NULL(config.allow_roots[0]);
-    config.exclude_count = 1;
-    config.include_count = 1;
-    config.allow_root_count = 1;
+    if (!config.exclude_patterns[0] || !config.include_patterns[0] || !config.allow_roots[0])
+    {
+        resolved_config_cleanup(&config);
+        return 1;
+    }
 
     resolved_config_cleanup(&config);
     ASSERT_NULL(config.input_directory);
@@ -432,9 +434,11 @@ TEST(resolved_config_cleanup_rejects_corrupt_counts)
     config.exclude_patterns = calloc(1, sizeof(*config.exclude_patterns));
     config.include_patterns = calloc(1, sizeof(*config.include_patterns));
     config.allow_roots = calloc(1, sizeof(*config.allow_roots));
-    ASSERT_NOT_NULL(config.exclude_patterns);
-    ASSERT_NOT_NULL(config.include_patterns);
-    ASSERT_NOT_NULL(config.allow_roots);
+    if (!config.exclude_patterns || !config.include_patterns || !config.allow_roots)
+    {
+        resolved_config_cleanup(&config);
+        return 1;
+    }
 
     config.exclude_count = -1;
     config.include_count = MAX_INCLUDES + 1;

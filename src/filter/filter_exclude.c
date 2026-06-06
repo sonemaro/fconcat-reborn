@@ -6,11 +6,20 @@
 #include <stdio.h>
 #include <stdint.h>
 
+static int exclude_context_is_valid(const ExcludeContext *ctx)
+{
+    if (!ctx || ctx->pattern_count < 0 || ctx->pattern_count > MAX_EXCLUDES)
+        return 0;
+    if (ctx->pattern_count > 0 && !ctx->patterns)
+        return 0;
+    return 1;
+}
+
 // Check if path matches any exclude pattern
 int exclude_match_path(const char *path, FileInfo *info, void *context)
 {
     ExcludeContext *ctx = (ExcludeContext *)context;
-    if (!ctx || !path)
+    if (!path || !exclude_context_is_valid(ctx))
         return 0;
 
     const char *basename = filter_get_basename(path);
@@ -120,7 +129,8 @@ static void destroy_exclude_context(ExcludeContext *ctx)
     if (!ctx)
         return;
 
-    for (int i = 0; i < ctx->pattern_count; i++)
+    int pattern_count = exclude_context_is_valid(ctx) ? ctx->pattern_count : 0;
+    for (int i = 0; i < pattern_count; i++)
     {
         free(ctx->patterns[i]);
     }

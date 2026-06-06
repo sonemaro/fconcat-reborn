@@ -254,6 +254,24 @@ TEST(exclude_match_path_null_context)
     return 0;
 }
 
+TEST(exclude_match_path_rejects_corrupt_context_counts)
+{
+    ExcludeContext ctx;
+    char *patterns[] = {"*.nomatch"};
+    ctx.patterns = patterns;
+
+    ctx.pattern_count = -1;
+    ASSERT_EQ(0, exclude_match_path("debug.log", NULL, &ctx));
+
+    ctx.pattern_count = MAX_EXCLUDES + 1;
+    ASSERT_EQ(0, exclude_match_path("debug.log", NULL, &ctx));
+
+    ctx.pattern_count = 1;
+    ctx.patterns = NULL;
+    ASSERT_EQ(0, exclude_match_path("debug.log", NULL, &ctx));
+    return 0;
+}
+
 /* =========================================================================
  * Include Pattern Tests  
  * Note: include_match_path returns:
@@ -296,6 +314,24 @@ TEST(include_match_path_empty_patterns)
     // No patterns means the loop doesn't execute - returns 0
     int result = include_match_path("anything.xyz", NULL, &ctx);
     ASSERT_EQ(0, result);
+    return 0;
+}
+
+TEST(include_match_path_rejects_corrupt_context_counts)
+{
+    IncludeContext ctx;
+    char *patterns[] = {"*.nomatch"};
+    ctx.patterns = patterns;
+
+    ctx.pattern_count = -1;
+    ASSERT_EQ(0, include_match_path("main.c", NULL, &ctx));
+
+    ctx.pattern_count = MAX_INCLUDES + 1;
+    ASSERT_EQ(0, include_match_path("main.c", NULL, &ctx));
+
+    ctx.pattern_count = 1;
+    ctx.patterns = NULL;
+    ASSERT_EQ(0, include_match_path("main.c", NULL, &ctx));
     return 0;
 }
 
@@ -419,6 +455,48 @@ TEST(filter_pattern_initializers_reject_invalid_counts)
     return 0;
 }
 
+TEST(filter_context_destroyers_handle_corrupt_counts)
+{
+    ExcludeContext *exclude_ctx = calloc(1, sizeof(*exclude_ctx));
+    if (!exclude_ctx)
+        return 1;
+    exclude_ctx->patterns = calloc(1, sizeof(*exclude_ctx->patterns));
+    if (!exclude_ctx->patterns)
+    {
+        destroy_exclude_context_wrapper(exclude_ctx);
+        return 1;
+    }
+    exclude_ctx->pattern_count = MAX_EXCLUDES + 1;
+    destroy_exclude_context_wrapper(exclude_ctx);
+
+    IncludeContext *include_ctx = calloc(1, sizeof(*include_ctx));
+    if (!include_ctx)
+        return 1;
+    include_ctx->patterns = calloc(1, sizeof(*include_ctx->patterns));
+    if (!include_ctx->patterns)
+    {
+        destroy_include_context_wrapper(include_ctx);
+        return 1;
+    }
+    include_ctx->pattern_count = -1;
+    destroy_include_context_wrapper(include_ctx);
+
+    exclude_ctx = calloc(1, sizeof(*exclude_ctx));
+    if (!exclude_ctx)
+        return 1;
+    exclude_ctx->pattern_count = 1;
+    exclude_ctx->patterns = NULL;
+    destroy_exclude_context_wrapper(exclude_ctx);
+
+    include_ctx = calloc(1, sizeof(*include_ctx));
+    if (!include_ctx)
+        return 1;
+    include_ctx->pattern_count = MAX_INCLUDES + 1;
+    include_ctx->patterns = NULL;
+    destroy_include_context_wrapper(include_ctx);
+    return 0;
+}
+
 /* =========================================================================
  * Main Entry Point
  * ========================================================================= */
@@ -455,17 +533,20 @@ int test_filter_main(void)
     RUN_TEST(exclude_match_path_basic_pattern);
     RUN_TEST(exclude_match_path_directory_pattern);
     RUN_TEST(exclude_match_path_null_context);
+    RUN_TEST(exclude_match_path_rejects_corrupt_context_counts);
     
     TEST_SUITE_BEGIN("Include Patterns");
     RUN_TEST(include_match_path_basic_pattern);
     RUN_TEST(include_match_path_null_context);
     RUN_TEST(include_match_path_empty_patterns);
+    RUN_TEST(include_match_path_rejects_corrupt_context_counts);
     
     TEST_SUITE_BEGIN("Filter Rules");
     RUN_TEST(filter_engine_add_rule);
     RUN_TEST(filter_engine_add_multiple_rules);
     RUN_TEST(filter_engine_add_rule_rejects_corrupt_state);
     RUN_TEST(filter_pattern_initializers_reject_invalid_counts);
+    RUN_TEST(filter_context_destroyers_handle_corrupt_counts);
     
     TEST_SUMMARY();
     
