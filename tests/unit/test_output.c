@@ -151,6 +151,54 @@ TEST(buffered_sink_rejects_zero_capacity_state)
     return 0;
 }
 
+TEST(buffered_sink_rejects_corrupt_state)
+{
+    TestOutputSink downstream;
+    test_sink_init(&downstream);
+
+    BufferedOutputSink buffered;
+    ASSERT_EQ(0, buffered_output_sink_init(&buffered, &downstream.sink, 8, 0));
+    char *saved_buffer = buffered.buffer;
+    size_t saved_capacity = buffered.capacity;
+
+    buffered.used = saved_capacity + 1;
+    ASSERT_EQ(-1, output_sink_write(&buffered.sink, "x", 1));
+    ASSERT_EQ(-1, output_sink_flush(&buffered.sink));
+
+    buffered.used = 0;
+    buffered.buffer = NULL;
+    ASSERT_EQ(-1, output_sink_write(&buffered.sink, "x", 1));
+    ASSERT_EQ(-1, output_sink_flush(&buffered.sink));
+
+    buffered.buffer = saved_buffer;
+    buffered.capacity = 0;
+    ASSERT_EQ(-1, output_sink_write(&buffered.sink, "x", 1));
+    ASSERT_EQ(-1, output_sink_flush(&buffered.sink));
+
+    buffered.capacity = saved_capacity;
+    buffered_output_sink_destroy(&buffered);
+    return 0;
+}
+
+TEST(buffered_sink_close_rejects_corrupt_state_but_closes_downstream)
+{
+    TestOutputSink downstream;
+    test_sink_init(&downstream);
+
+    BufferedOutputSink buffered;
+    ASSERT_EQ(0, buffered_output_sink_init(&buffered, &downstream.sink, 8, 1));
+    buffered.used = buffered.capacity + 1;
+
+    int close_result = output_sink_close(&buffered.sink);
+    int close_count = downstream.close_count;
+
+    buffered_output_sink_destroy(&buffered);
+
+    ASSERT_EQ(-1, close_result);
+    ASSERT_EQ(1, close_count);
+    return 0;
+}
+
 TEST(text_output_null_guards)
 {
     ASSERT_EQ(-1, text_begin_structure(NULL));
@@ -244,6 +292,8 @@ int test_output_main(void)
     RUN_TEST(output_sink_null_inputs_are_safe);
     RUN_TEST(buffered_sink_flushes_and_closes_downstream);
     RUN_TEST(buffered_sink_rejects_zero_capacity_state);
+    RUN_TEST(buffered_sink_rejects_corrupt_state);
+    RUN_TEST(buffered_sink_close_rejects_corrupt_state_but_closes_downstream);
 
     TEST_SUITE_BEGIN("Text Output Safety");
     RUN_TEST(text_output_null_guards);

@@ -113,6 +113,16 @@ static int fd_sink_fd(OutputSink *sink)
     return fd_sink->fd;
 }
 
+static int buffered_sink_state_is_valid(const BufferedOutputSink *buffered)
+{
+    return buffered &&
+           buffered->downstream &&
+           !buffered->closed &&
+           buffered->buffer &&
+           buffered->capacity > 0 &&
+           buffered->used <= buffered->capacity;
+}
+
 void file_output_sink_init(FileOutputSink *sink, FILE *file, int owns_file)
 {
     if (!sink)
@@ -145,7 +155,7 @@ void fd_output_sink_init(FdOutputSink *sink, int fd, int owns_fd)
 
 static int buffered_sink_drain(BufferedOutputSink *buffered, int flush_downstream)
 {
-    if (!buffered || !buffered->downstream || buffered->closed)
+    if (!buffered_sink_state_is_valid(buffered))
         return -1;
 
     if (buffered->used > 0)
@@ -167,7 +177,7 @@ static int buffered_sink_flush(OutputSink *sink)
 static int buffered_sink_write(OutputSink *sink, const char *data, size_t size)
 {
     BufferedOutputSink *buffered = (BufferedOutputSink *)sink;
-    if (!buffered || !buffered->downstream || !data || buffered->closed || buffered->capacity == 0)
+    if (!buffered_sink_state_is_valid(buffered) || !data)
         return -1;
 
     if (size == 0)
