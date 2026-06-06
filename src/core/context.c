@@ -47,6 +47,17 @@ static int context_document_callbacks_are_valid(const FconcatContext *ctx)
            ctx->warning;
 }
 
+static void context_clear_current_file(FconcatContext *ctx)
+{
+    if (!ctx)
+        return;
+
+    ctx->current_file_path = NULL;
+    ctx->current_file_info = NULL;
+    ctx->current_file_processed_bytes = 0;
+    ctx->current_directory_level = 0;
+}
+
 static size_t stat_size_to_size_t(off_t size)
 {
     if (size <= 0)
@@ -481,6 +492,7 @@ int process_fconcat_document(FconcatContext *ctx, const ResolvedConfig *config,
     result = text_end_document(ctx);
 
 cleanup:
+    context_clear_current_file(ctx);
     free(stream_buffer);
     file_index_destroy(index);
     return result;
