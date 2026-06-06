@@ -17,6 +17,7 @@ extern int test_filter_main(void);
 extern int test_config_main(void);
 extern int test_context_main(void);
 extern int test_error_main(void);
+extern int test_file_index_main(void);
 extern int test_output_main(void);
 extern int test_traversal_main(void);
 
@@ -47,6 +48,10 @@ static int run_unit_tests(void)
     /* Error tests */
     fprintf(stderr, "\n>>> Running error tests...\n");
     failed += test_error_main();
+
+    /* File index tests */
+    fprintf(stderr, "\n>>> Running file index tests...\n");
+    failed += test_file_index_main();
 
     /* Output tests */
     fprintf(stderr, "\n>>> Running output tests...\n");

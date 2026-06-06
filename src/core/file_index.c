@@ -43,6 +43,14 @@ struct FileIndex
     int prefix_cache_disabled;
 };
 
+static int file_index_entries_are_valid(const FileIndex *index)
+{
+    return index &&
+           index->count <= index->capacity &&
+           index->capacity <= SIZE_MAX / sizeof(FileIndexEntry) &&
+           (index->capacity == 0 || index->entries);
+}
+
 typedef struct
 {
     dev_t dev;
@@ -193,6 +201,33 @@ static struct dirent *dir_entry_dup(const struct dirent *entry)
     return copy;
 }
 
+static int next_dir_entry_capacity(int capacity, int *next_capacity)
+{
+    if (!next_capacity || capacity < 0 || capacity == INT_MAX)
+        return -1;
+
+    int candidate;
+    if (capacity == 0)
+    {
+        candidate = 64;
+    }
+    else if (capacity > INT_MAX / 2)
+    {
+        candidate = INT_MAX;
+    }
+    else
+    {
+        candidate = capacity * 2;
+    }
+
+    if (candidate <= capacity ||
+        (size_t)candidate > SIZE_MAX / sizeof(struct dirent *))
+        return -1;
+
+    *next_capacity = candidate;
+    return 0;
+}
+
 static int read_sorted_directory(const char *path, struct dirent ***entries, int *entry_count)
 {
     if (!path || !entries || !entry_count)
@@ -225,15 +260,12 @@ static int read_sorted_directory(const char *path, struct dirent ***entries, int
 
         if (count == capacity)
         {
-            if (capacity == INT_MAX)
+            int new_capacity = 0;
+            if (next_dir_entry_capacity(capacity, &new_capacity) != 0)
             {
                 saved_errno = ENOMEM;
                 break;
             }
-
-            int new_capacity = capacity == 0 ? 64 : capacity * 2;
-            if (new_capacity < capacity || new_capacity > INT_MAX)
-                new_capacity = INT_MAX;
 
             struct dirent **new_list = realloc(list, (size_t)new_capacity * sizeof(*new_list));
             if (!new_list)
@@ -420,13 +452,20 @@ static FileIndexEntry *file_index_append(FileIndex *index,
                                          int level,
                                          const FileInfo *info)
 {
-    if (!index || !full_path || !relative_path || !info)
+    if (!file_index_entries_are_valid(index) || !full_path || !relative_path || !info)
         return NULL;
 
     if (index->count >= index->capacity)
     {
-        size_t new_capacity = index->capacity ? index->capacity * 2 : FILE_INDEX_INITIAL_CAPACITY;
-        if (new_capacity < index->capacity || new_capacity > SIZE_MAX / sizeof(FileIndexEntry))
+        size_t new_capacity = FILE_INDEX_INITIAL_CAPACITY;
+        if (index->capacity > 0)
+        {
+            if (index->capacity > SIZE_MAX / 2)
+                return NULL;
+            new_capacity = index->capacity * 2;
+        }
+
+        if (new_capacity <= index->capacity || new_capacity > SIZE_MAX / sizeof(FileIndexEntry))
             return NULL;
 
         FileIndexEntry *entries = realloc(index->entries, new_capacity * sizeof(*entries));
@@ -612,7 +651,7 @@ int file_index_build(FileIndex *index,
                      int (*should_stop)(void *user_data),
                      void *user_data)
 {
-    if (!index || !ctx || !config || !config->input_directory)
+    if (!file_index_entries_are_valid(index) || !ctx || !config || !config->input_directory)
         return -1;
 
     char initial_full_path[MAX_PATH];
@@ -971,12 +1010,12 @@ int file_index_build(FileIndex *index,
 
 size_t file_index_count(const FileIndex *index)
 {
-    return index ? index->count : 0;
+    return file_index_entries_are_valid(index) ? index->count : 0;
 }
 
 FileIndexEntry *file_index_entry(FileIndex *index, size_t offset)
 {
-    if (!index || offset >= index->count)
+    if (!file_index_entries_are_valid(index) || offset >= index->count)
         return NULL;
     return &index->entries[offset];
 }
