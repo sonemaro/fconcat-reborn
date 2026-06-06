@@ -13,6 +13,7 @@
  */
 
 #include "../unit/test_framework.h"
+#include "../../src/server/server.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1326,6 +1327,41 @@ TEST(integ_server_client_disconnect_cleanup)
     return 0;
 }
 
+TEST(integ_server_rejects_invalid_config)
+{
+    ResolvedConfig config;
+    memset(&config, 0, sizeof(config));
+
+    ASSERT_EQ(-1, server_run(NULL, NULL, NULL));
+    ASSERT_EQ(-1, server_run(&config, NULL, NULL));
+
+    char *roots[] = {"/path/that/should/not/exist/fconcat"};
+    config.listen_host = "127.0.0.1";
+    config.listen_port = 18080;
+    config.allow_roots = NULL;
+    config.allow_root_count = 1;
+    config.server_workers = 1;
+    config.server_queue_size = 1;
+    ASSERT_EQ(-1, server_run(&config, NULL, NULL));
+
+    config.allow_roots = roots;
+    config.allow_root_count = MAX_ALLOW_ROOTS + 1;
+    ASSERT_EQ(-1, server_run(&config, NULL, NULL));
+
+    config.allow_root_count = 1;
+    config.server_workers = 0;
+    ASSERT_EQ(-1, server_run(&config, NULL, NULL));
+
+    config.server_workers = 1;
+    config.server_queue_size = 0;
+    ASSERT_EQ(-1, server_run(&config, NULL, NULL));
+
+    config.server_queue_size = 1;
+    ASSERT_EQ(-1, server_run(&config, NULL, NULL));
+
+    return 0;
+}
+
 /* =========================================================================
  * Main Entry Point
  * ========================================================================= */
@@ -1397,6 +1433,7 @@ int test_traversal_main(void)
     RUN_TEST(integ_server_malformed_query_cleanup);
     RUN_TEST(integ_server_denied_root);
     RUN_TEST(integ_server_client_disconnect_cleanup);
+    RUN_TEST(integ_server_rejects_invalid_config);
     
     TEST_SUMMARY();
     

@@ -472,6 +472,9 @@ FconcatContext *create_fconcat_context(const ResolvedConfig *config,
                                        MemoryManager *memory_manager,
                                        struct FilterEngine *filter_engine)
 {
+    if (!config || !output_sink)
+        return NULL;
+
     // Use heap allocation for context to ensure it's properly isolated
     FconcatContext *ctx = calloc(1, sizeof(FconcatContext));
     if (!ctx)

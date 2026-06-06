@@ -389,7 +389,7 @@ int text_write_directory(FconcatContext *ctx, const char *path, int level)
 
 int text_write_file_entry(FconcatContext *ctx, const char *path, FileInfo *info)
 {
-    if (!ctx || !ctx->write_output || !path || ctx->current_directory_level < 0)
+    if (!ctx || !ctx->write_output || !ctx->get_config_bool || !path || ctx->current_directory_level < 0)
         return -1;
 
     size_t indent = (size_t)ctx->current_directory_level * 2;

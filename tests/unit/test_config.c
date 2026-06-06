@@ -164,6 +164,26 @@ TEST(config_layer_get_value_null_params)
     return 0;
 }
 
+TEST(config_layer_add_value_rejects_corrupt_counts)
+{
+    ConfigLayer layer;
+    memset(&layer, 0, sizeof(layer));
+
+    layer.value_count = -1;
+    ASSERT_EQ(-1, config_layer_add_value(&layer, "bad", CONFIG_TYPE_STRING));
+
+    layer.value_count = 2;
+    layer.value_capacity = 1;
+    ASSERT_EQ(-1, config_layer_add_value(&layer, "bad", CONFIG_TYPE_STRING));
+
+    layer.value_count = 0;
+    layer.value_capacity = 1;
+    layer.values = NULL;
+    ASSERT_EQ(-1, config_layer_add_value(&layer, "bad", CONFIG_TYPE_STRING));
+
+    return 0;
+}
+
 /* =========================================================================
  * Default Configuration Tests
  * ========================================================================= */
@@ -184,6 +204,22 @@ TEST(config_load_defaults_null_manager)
 {
     int result = config_load_defaults(NULL);
     ASSERT_EQ(-1, result);
+    return 0;
+}
+
+TEST(config_load_defaults_rejects_invalid_layer_count)
+{
+    ConfigManager *mgr = config_manager_create();
+    ASSERT_NOT_NULL(mgr);
+
+    mgr->layer_count = MAX_CONFIG_LAYERS;
+    ASSERT_EQ(-1, config_load_defaults(mgr));
+
+    mgr->layer_count = -1;
+    ASSERT_EQ(-1, config_load_defaults(mgr));
+
+    mgr->layer_count = 0;
+    config_manager_destroy(mgr);
     return 0;
 }
 
@@ -233,6 +269,20 @@ TEST(config_cli_rejects_removed_format_option)
     ASSERT_EQ(0, config_load_defaults(mgr));
     char *argv[] = {"fconcat", "input", "output.txt", "--format", "json"};
     ASSERT_EQ(-1, config_load_cli(mgr, 5, argv));
+
+    config_manager_destroy(mgr);
+    return 0;
+}
+
+TEST(config_cli_rejects_null_argv)
+{
+    ConfigManager *mgr = config_manager_create();
+    ASSERT_NOT_NULL(mgr);
+
+    ASSERT_EQ(-1, config_load_cli(mgr, 2, NULL));
+
+    char *argv_with_null[] = {"fconcat", NULL};
+    ASSERT_EQ(-1, config_load_cli(mgr, 2, argv_with_null));
 
     config_manager_destroy(mgr);
     return 0;
@@ -356,15 +406,18 @@ int test_config_main(void)
     RUN_TEST(config_layer_add_value_succeeds);
     RUN_TEST(config_layer_get_value_returns_null_for_missing_key);
     RUN_TEST(config_layer_get_value_null_params);
+    RUN_TEST(config_layer_add_value_rejects_corrupt_counts);
     
     TEST_SUITE_BEGIN("Default Configuration");
     RUN_TEST(config_load_defaults_succeeds);
     RUN_TEST(config_load_defaults_null_manager);
+    RUN_TEST(config_load_defaults_rejects_invalid_layer_count);
     
     TEST_SUITE_BEGIN("Configuration Resolution");
     RUN_TEST(config_resolve_returns_valid_config);
     RUN_TEST(config_resolve_defaults_only_is_invalid_batch_config);
     RUN_TEST(config_cli_rejects_removed_format_option);
+    RUN_TEST(config_cli_rejects_null_argv);
     RUN_TEST(config_cli_rejects_removed_plugin_option);
     RUN_TEST(config_resolve_server_config);
     RUN_TEST(config_resolve_null_manager);

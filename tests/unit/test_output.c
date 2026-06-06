@@ -158,6 +158,17 @@ TEST(text_output_null_guards)
     return 0;
 }
 
+TEST(text_output_rejects_missing_callbacks)
+{
+    FconcatContext ctx;
+    memset(&ctx, 0, sizeof(ctx));
+
+    ctx.write_output = test_context_write_output;
+    ctx.current_directory_level = 0;
+    ASSERT_EQ(-1, text_write_file_entry(&ctx, "file.txt", NULL));
+    return 0;
+}
+
 TEST(text_output_rejects_invalid_levels)
 {
     TestOutputSink sink;
@@ -206,6 +217,7 @@ int test_output_main(void)
 
     TEST_SUITE_BEGIN("Text Output Safety");
     RUN_TEST(text_output_null_guards);
+    RUN_TEST(text_output_rejects_missing_callbacks);
     RUN_TEST(text_output_rejects_invalid_levels);
     RUN_TEST(text_output_writes_expected_structure);
 

@@ -35,6 +35,8 @@ SOURCES := \
 TEST_SOURCES := \
 	tests/test_main.c \
 	tests/unit/test_config.c \
+	tests/unit/test_context.c \
+	tests/unit/test_error.c \
 	tests/unit/test_filter.c \
 	tests/unit/test_memory.c \
 	tests/unit/test_output.c \

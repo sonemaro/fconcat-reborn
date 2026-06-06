@@ -1,0 +1,67 @@
+/**
+ * @file test_context.c
+ * @brief Unit tests for FconcatContext API safety.
+ */
+
+#include "test_framework.h"
+#include "../../src/core/context.h"
+#include "../../src/output/output.h"
+#include <string.h>
+
+static int context_test_sink_write(OutputSink *sink, const char *data, size_t size)
+{
+    (void)sink;
+    (void)data;
+    (void)size;
+    return 0;
+}
+
+static void init_context_test_sink(OutputSink *sink)
+{
+    memset(sink, 0, sizeof(*sink));
+    sink->write = context_test_sink_write;
+}
+
+TEST(create_fconcat_context_rejects_null_inputs)
+{
+    ResolvedConfig config;
+    memset(&config, 0, sizeof(config));
+    OutputSink sink;
+    init_context_test_sink(&sink);
+
+    ASSERT_NULL(create_fconcat_context(NULL, &sink, NULL, NULL, NULL, NULL));
+    ASSERT_NULL(create_fconcat_context(&config, NULL, NULL, NULL, NULL, NULL));
+    return 0;
+}
+
+TEST(create_fconcat_context_accepts_minimal_valid_inputs)
+{
+    ResolvedConfig config;
+    memset(&config, 0, sizeof(config));
+    config.output_file = "out.txt";
+
+    OutputSink sink;
+    init_context_test_sink(&sink);
+
+    FconcatContext *ctx = create_fconcat_context(&config, &sink, NULL, NULL, NULL, NULL);
+    ASSERT_NOT_NULL(ctx);
+    ASSERT_TRUE(ctx->config == &config);
+    ASSERT_TRUE(((InternalContextState *)ctx->internal_state)->output_sink == &sink);
+
+    destroy_fconcat_context(ctx);
+    return 0;
+}
+
+int test_context_main(void)
+{
+    tests_run = 0;
+    tests_passed = 0;
+    tests_failed = 0;
+
+    TEST_SUITE_BEGIN("FconcatContext Safety");
+    RUN_TEST(create_fconcat_context_rejects_null_inputs);
+    RUN_TEST(create_fconcat_context_accepts_minimal_valid_inputs);
+
+    TEST_SUMMARY();
+    return TEST_EXIT_CODE();
+}

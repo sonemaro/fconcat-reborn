@@ -69,6 +69,9 @@ typedef struct
 
 static int send_all(int fd, const char *data, size_t size)
 {
+    if (fd < 0 || (!data && size > 0))
+        return -1;
+
     size_t sent = 0;
     while (sent < size)
     {
@@ -132,6 +135,9 @@ static int send_iov_all(int fd, const struct iovec *iov, int iovcnt)
 
 static int send_text_response(int fd, int status, const char *reason, const char *body)
 {
+    if (!reason)
+        return -1;
+
     char header[512];
     size_t body_len = body ? strlen(body) : 0;
     int n = snprintf(header, sizeof(header),
@@ -201,6 +207,9 @@ static int chunked_close(OutputSink *sink)
 
 static void chunked_sink_init(HttpChunkedSink *sink, int fd)
 {
+    if (!sink)
+        return;
+
     memset(sink, 0, sizeof(*sink));
     sink->sink.user_data = sink;
     sink->sink.write = chunked_write;
@@ -211,6 +220,9 @@ static void chunked_sink_init(HttpChunkedSink *sink, int fd)
 
 static int queue_init(ConnectionQueue *queue, int capacity)
 {
+    if (!queue || capacity <= 0)
+        return -1;
+
     memset(queue, 0, sizeof(*queue));
     queue->fds = calloc((size_t)capacity, sizeof(int));
     if (!queue->fds)
@@ -232,6 +244,9 @@ static int queue_init(ConnectionQueue *queue, int capacity)
 
 static void queue_close(ConnectionQueue *queue)
 {
+    if (!queue)
+        return;
+
     pthread_mutex_lock(&queue->mutex);
     queue->closed = 1;
     pthread_cond_broadcast(&queue->not_empty);
@@ -242,10 +257,13 @@ static void queue_destroy(ConnectionQueue *queue)
 {
     if (!queue)
         return;
-    for (int i = 0; i < queue->count; i++)
+    if (queue->fds && queue->capacity > 0)
     {
-        int idx = (queue->head + i) % queue->capacity;
-        close(queue->fds[idx]);
+        for (int i = 0; i < queue->count; i++)
+        {
+            int idx = (queue->head + i) % queue->capacity;
+            close(queue->fds[idx]);
+        }
     }
     free(queue->fds);
     pthread_cond_destroy(&queue->not_empty);
@@ -254,6 +272,9 @@ static void queue_destroy(ConnectionQueue *queue)
 
 static int queue_push(ConnectionQueue *queue, int fd)
 {
+    if (!queue || !queue->fds || queue->capacity <= 0 || fd < 0)
+        return -1;
+
     int result = 0;
     pthread_mutex_lock(&queue->mutex);
     if (queue->closed || queue->count >= queue->capacity)
@@ -273,6 +294,9 @@ static int queue_push(ConnectionQueue *queue, int fd)
 
 static int queue_pop(ConnectionQueue *queue)
 {
+    if (!queue || !queue->fds || queue->capacity <= 0)
+        return -1;
+
     pthread_mutex_lock(&queue->mutex);
     while (!queue->closed && queue->count == 0)
         pthread_cond_wait(&queue->not_empty, &queue->mutex);
@@ -493,6 +517,9 @@ fail:
 
 static int path_is_under_root(const char *path, const char *root)
 {
+    if (!path || !root)
+        return 0;
+
     size_t root_len = strlen(root);
     if (strcmp(path, root) == 0)
         return 1;
@@ -501,6 +528,9 @@ static int path_is_under_root(const char *path, const char *root)
 
 static int root_allowed(ServerRuntime *runtime, const char *root)
 {
+    if (!runtime || !root || !runtime->allowed_roots || runtime->allowed_root_count <= 0)
+        return 0;
+
     for (int i = 0; i < runtime->allowed_root_count; i++)
     {
         if (path_is_under_root(root, runtime->allowed_roots[i]))
@@ -513,6 +543,8 @@ static int header_has_valid_auth(const char *headers, const char *token)
 {
     if (!token || token[0] == '\0')
         return 1;
+    if (!headers)
+        return 0;
 
     const char *p = headers;
     while ((p = strstr(p, "\n")) != NULL)
@@ -541,6 +573,9 @@ static int header_has_valid_auth(const char *headers, const char *token)
 
 static int read_http_request(int fd, char *buffer, size_t size)
 {
+    if (fd < 0 || !buffer || size < 2)
+        return -1;
+
     size_t total = 0;
     while (total + 1 < size)
     {
@@ -563,6 +598,12 @@ static int read_http_request(int fd, char *buffer, size_t size)
 
 static void handle_concat(ServerRuntime *runtime, int fd, const char *query)
 {
+    if (!runtime || !runtime->config)
+    {
+        send_text_response(fd, 500, "Internal Server Error", "server unavailable\n");
+        return;
+    }
+
     RequestOptions opts;
     if (parse_concat_query(query, runtime->config, &opts) != 0)
     {
@@ -737,8 +778,13 @@ static void *worker_main(void *arg)
 
 static int create_listener(const char *host, int port)
 {
+    if (!host || port <= 0 || port > 65535)
+        return -1;
+
     char port_buf[16];
-    snprintf(port_buf, sizeof(port_buf), "%d", port);
+    int port_len = snprintf(port_buf, sizeof(port_buf), "%d", port);
+    if (port_len < 0 || (size_t)port_len >= sizeof(port_buf))
+        return -1;
 
     struct addrinfo hints;
     memset(&hints, 0, sizeof(hints));
@@ -772,6 +818,9 @@ static int create_listener(const char *host, int port)
 
 static void free_allowed_roots(ServerRuntime *runtime)
 {
+    if (!runtime)
+        return;
+
     for (int i = 0; i < runtime->allowed_root_count; i++)
         free(runtime->allowed_roots[i]);
     free(runtime->allowed_roots);
@@ -781,12 +830,23 @@ static void free_allowed_roots(ServerRuntime *runtime)
 
 static int prepare_allowed_roots(ServerRuntime *runtime)
 {
+    if (!runtime || !runtime->config || !runtime->config->allow_roots ||
+        runtime->config->allow_root_count <= 0 ||
+        runtime->config->allow_root_count > MAX_ALLOW_ROOTS)
+        return -1;
+
     runtime->allowed_roots = calloc((size_t)runtime->config->allow_root_count, sizeof(char *));
     if (!runtime->allowed_roots)
         return -1;
 
     for (int i = 0; i < runtime->config->allow_root_count; i++)
     {
+        if (!runtime->config->allow_roots[i])
+        {
+            free_allowed_roots(runtime);
+            return -1;
+        }
+
         char *real = realpath(runtime->config->allow_roots[i], NULL);
         if (!real)
         {
@@ -800,7 +860,10 @@ static int prepare_allowed_roots(ServerRuntime *runtime)
 
 int server_run(const ResolvedConfig *config, int (*should_stop)(void *user_data), void *user_data)
 {
-    if (!config || !config->listen_host || config->listen_port <= 0 || config->allow_root_count <= 0)
+    if (!config || !config->listen_host || config->listen_port <= 0 || config->listen_port > 65535 ||
+        !config->allow_roots || config->allow_root_count <= 0 || config->allow_root_count > MAX_ALLOW_ROOTS ||
+        config->server_workers <= 0 || config->server_workers > 256 ||
+        config->server_queue_size <= 0 || config->server_queue_size > 4096)
         return -1;
 
     ServerRuntime runtime;

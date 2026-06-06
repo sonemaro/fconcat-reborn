@@ -130,7 +130,7 @@ static int append_indexed_string(ConfigLayer *layer, const char *count_key,
     if (count_val)
         count = count_val->value.int_value;
 
-    if (count >= max_items)
+    if (count < 0 || count >= max_items)
         return -1;
 
     char key[64];
@@ -253,10 +253,16 @@ void config_manager_destroy(ConfigManager *manager)
 
 int config_load_defaults(ConfigManager *manager)
 {
-    if (!manager || manager->layer_count >= MAX_CONFIG_LAYERS)
+    if (!manager)
         return -1;
 
     pthread_mutex_lock(&manager->mutex);
+    if (manager->layer_count < 0 || manager->layer_count >= MAX_CONFIG_LAYERS)
+    {
+        pthread_mutex_unlock(&manager->mutex);
+        return -1;
+    }
+
     ConfigLayer *layer = &manager->layers[manager->layer_count];
     if (config_layer_init(layer, CONFIG_SOURCE_DEFAULTS, 0) != 0)
     {
@@ -289,10 +295,21 @@ int config_load_defaults(ConfigManager *manager)
 
 int config_load_cli(ConfigManager *manager, int argc, char *argv[])
 {
-    if (!manager || argc < 2 || manager->layer_count >= MAX_CONFIG_LAYERS)
+    if (!manager || argc < 2 || !argv)
         return -1;
+    for (int i = 0; i < argc; i++)
+    {
+        if (!argv[i])
+            return -1;
+    }
 
     pthread_mutex_lock(&manager->mutex);
+    if (manager->layer_count < 0 || manager->layer_count >= MAX_CONFIG_LAYERS)
+    {
+        pthread_mutex_unlock(&manager->mutex);
+        return -1;
+    }
+
     ConfigLayer *layer = &manager->layers[manager->layer_count];
     if (config_layer_init(layer, CONFIG_SOURCE_CLI, 100) != 0)
     {
@@ -428,7 +445,7 @@ int config_load_cli(ConfigManager *manager, int argc, char *argv[])
 }
 
 static char **resolve_string_array(ConfigManager *manager, const char *count_key,
-                                   const char *item_prefix, int *out_count)
+                                   const char *item_prefix, int max_count, int *out_count)
 {
     if (!manager || !count_key || !item_prefix || !out_count)
         return NULL;
@@ -436,6 +453,8 @@ static char **resolve_string_array(ConfigManager *manager, const char *count_key
     int count = config_get_int(manager, count_key);
     *out_count = 0;
     if (count <= 0)
+        return NULL;
+    if (count > max_count)
         return NULL;
 
     char **items = calloc((size_t)count, sizeof(char *));
@@ -478,6 +497,12 @@ ResolvedConfig *config_resolve(ConfigManager *manager)
         return NULL;
 
     pthread_mutex_lock(&manager->mutex);
+    if (manager->layer_count < 0 || manager->layer_count > MAX_CONFIG_LAYERS)
+    {
+        pthread_mutex_unlock(&manager->mutex);
+        return NULL;
+    }
+
     ResolvedConfig *config = manager->resolved;
     resolved_config_cleanup(config);
 
@@ -501,9 +526,9 @@ ResolvedConfig *config_resolve(ConfigManager *manager)
     if (token)
         config->auth_token = strdup(token);
 
-    config->include_patterns = resolve_string_array(manager, "include_count", "include_pattern", &config->include_count);
-    config->exclude_patterns = resolve_string_array(manager, "exclude_count", "exclude_pattern", &config->exclude_count);
-    config->allow_roots = resolve_string_array(manager, "allow_root_count", "allow_root", &config->allow_root_count);
+    config->include_patterns = resolve_string_array(manager, "include_count", "include_pattern", MAX_INCLUDES, &config->include_count);
+    config->exclude_patterns = resolve_string_array(manager, "exclude_count", "exclude_pattern", MAX_EXCLUDES, &config->exclude_count);
+    config->allow_roots = resolve_string_array(manager, "allow_root_count", "allow_root", MAX_ALLOW_ROOTS, &config->allow_root_count);
 
     const char *listen = config_get_string(manager, "listen");
     if (parse_listen_value(listen ? listen : "127.0.0.1:8080", &config->listen_host, &config->listen_port) != 0)
@@ -645,9 +670,16 @@ int config_layer_add_value(ConfigLayer *layer, const char *key, ConfigType type)
 {
     if (!layer || !key)
         return -1;
+    if (layer->value_count < 0 || layer->value_capacity < 0 ||
+        layer->value_count > layer->value_capacity)
+        return -1;
+    if (!layer->values && layer->value_capacity > 0)
+        return -1;
 
     if (layer->value_count >= layer->value_capacity)
     {
+        if (layer->value_capacity > INT_MAX / 2)
+            return -1;
         int new_capacity = layer->value_capacity > 0 ? layer->value_capacity * 2 : 32;
         ConfigValue *new_values = realloc(layer->values, (size_t)new_capacity * sizeof(ConfigValue));
         if (!new_values)

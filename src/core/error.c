@@ -42,10 +42,15 @@ void error_manager_destroy(ErrorManager *manager)
 
 void error_report_context(ErrorManager *manager, FconcatErrorCode code, const char *file, int line, const char *function, const char *format, ...)
 {
-    if (!manager || manager->error_count >= MAX_ERRORS)
+    if (!manager || !format)
         return;
 
     pthread_mutex_lock(&manager->mutex);
+    if (manager->error_count >= MAX_ERRORS)
+    {
+        pthread_mutex_unlock(&manager->mutex);
+        return;
+    }
 
     ErrorContext *ctx = &manager->errors[manager->error_count];
     ctx->code = code;
@@ -89,10 +94,15 @@ void error_report_context(ErrorManager *manager, FconcatErrorCode code, const ch
 
 void error_report(ErrorManager *manager, FconcatErrorCode code, const char *format, ...)
 {
-    if (!manager || manager->error_count >= MAX_ERRORS)
+    if (!manager || !format)
         return;
 
     pthread_mutex_lock(&manager->mutex);
+    if (manager->error_count >= MAX_ERRORS)
+    {
+        pthread_mutex_unlock(&manager->mutex);
+        return;
+    }
 
     ErrorContext *ctx = &manager->errors[manager->error_count];
     ctx->code = code;
@@ -129,7 +139,7 @@ void error_report(ErrorManager *manager, FconcatErrorCode code, const char *form
 
 void warning_report(ErrorManager *manager, const char *format, ...)
 {
-    if (!manager)
+    if (!manager || !format)
         return;
 
     pthread_mutex_lock(&manager->mutex);
