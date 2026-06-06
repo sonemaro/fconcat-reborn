@@ -579,6 +579,30 @@ static int header_has_valid_auth(const char *headers, const char *token)
     return 0;
 }
 
+static int request_token_is_valid(const char *value)
+{
+    if (!value || value[0] == '\0')
+        return 0;
+
+    for (const unsigned char *p = (const unsigned char *)value; *p; p++)
+    {
+        if (*p <= ' ' || *p == 0x7f)
+            return 0;
+    }
+    return 1;
+}
+
+static int request_target_is_valid(const char *target)
+{
+    return target && target[0] == '/' && request_token_is_valid(target);
+}
+
+static int http_version_is_valid(const char *version)
+{
+    return version &&
+           (strcmp(version, "HTTP/1.0") == 0 || strcmp(version, "HTTP/1.1") == 0);
+}
+
 static int read_http_request(int fd, char *buffer, size_t size)
 {
     if (fd < 0 || !buffer || size < 2)
@@ -596,6 +620,8 @@ static int read_http_request(int fd, char *buffer, size_t size)
         }
         if (n == 0)
             break;
+        if (memchr(buffer + total, '\0', (size_t)n))
+            return -1;
         total += (size_t)n;
         buffer[total] = '\0';
         if (strstr(buffer, "\r\n\r\n") || strstr(buffer, "\n\n"))
@@ -739,6 +765,14 @@ static void handle_client(ServerRuntime *runtime, int fd)
         return;
     }
     *version++ = '\0';
+
+    if (!request_token_is_valid(method) ||
+        !request_target_is_valid(target) ||
+        !http_version_is_valid(version))
+    {
+        send_text_response(fd, 400, "Bad Request", "bad request line\n");
+        return;
+    }
 
     if (strcmp(method, "GET") != 0)
     {

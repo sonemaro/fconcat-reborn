@@ -382,6 +382,68 @@ static int http_get_local(int port, const char *target, char *output, size_t out
     return 0;
 }
 
+static int http_send_raw_local(int port, const char *request, size_t request_len,
+                               char *output, size_t output_size)
+{
+    if (!request || request_len == 0)
+        return -1;
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0)
+        return -1;
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        close(fd);
+        return -1;
+    }
+
+    size_t sent = 0;
+    while (sent < request_len) {
+        ssize_t wr = send(fd, request + sent, request_len - sent, 0);
+        if (wr < 0) {
+            if (errno == EINTR)
+                continue;
+            close(fd);
+            return -1;
+        }
+        if (wr == 0) {
+            close(fd);
+            return -1;
+        }
+        sent += (size_t)wr;
+    }
+    shutdown(fd, SHUT_WR);
+
+    size_t total = 0;
+    if (output && output_size > 0)
+        output[0] = '\0';
+
+    while (output && total + 1 < output_size) {
+        ssize_t rd = recv(fd, output + total, output_size - total - 1, 0);
+        if (rd < 0) {
+            if (errno == EINTR)
+                continue;
+            close(fd);
+            return -1;
+        }
+        if (rd == 0)
+            break;
+        total += (size_t)rd;
+    }
+
+    if (output && output_size > 0)
+        output[total] = '\0';
+
+    close(fd);
+    return 0;
+}
+
 static pid_t start_fconcat_server(const char *root, int port)
 {
     pid_t pid = fork();
@@ -1316,6 +1378,78 @@ TEST(integ_server_malformed_query_cleanup)
     return 0;
 }
 
+TEST(integ_server_rejects_malformed_request_line)
+{
+    create_test_root();
+    create_dir("server-request-line");
+
+    char root[TEST_PATH_MAX];
+    snprintf(root, sizeof(root), "%s/server-request-line", test_root);
+
+    int port = 18700 + (getpid() % 20000);
+    pid_t pid = start_fconcat_server(root, port);
+    ASSERT_TRUE(pid > 0);
+
+    if (wait_for_server_ready(port) != 0) {
+        (void)stop_fconcat_server(pid);
+        ASSERT_TRUE(0);
+    }
+
+    char response[8192];
+    const char *bad_version =
+        "GET /healthz HTTP/9.9\r\n"
+        "Host: 127.0.0.1\r\n"
+        "Connection: close\r\n\r\n";
+    int bad_version_result = http_send_raw_local(port, bad_version, strlen(bad_version),
+                                                 response, sizeof(response));
+    int bad_version_is_bad_request = output_contains(response, "HTTP/1.1 400 Bad Request");
+
+    const char *empty_target =
+        "GET  HTTP/1.1\r\n"
+        "Host: 127.0.0.1\r\n"
+        "Connection: close\r\n\r\n";
+    int empty_target_result = http_send_raw_local(port, empty_target, strlen(empty_target),
+                                                  response, sizeof(response));
+    int empty_target_is_bad_request = output_contains(response, "HTTP/1.1 400 Bad Request");
+
+    const char *control_target =
+        "GET /healthz\tbad HTTP/1.1\r\n"
+        "Host: 127.0.0.1\r\n"
+        "Connection: close\r\n\r\n";
+    int control_target_result = http_send_raw_local(port, control_target, strlen(control_target),
+                                                    response, sizeof(response));
+    int control_target_is_bad_request = output_contains(response, "HTTP/1.1 400 Bad Request");
+
+    const char nul_request[] = {
+        'G', 'E', 'T', ' ', '/', 'h', 'e', 'a', 'l', 't', 'h', 'z', 0, 'b', 'a', 'd',
+        ' ', 'H', 'T', 'T', 'P', '/', '1', '.', '1', '\r', '\n',
+        'H', 'o', 's', 't', ':', ' ', '1', '2', '7', '.', '0', '.', '0', '.', '1', '\r', '\n',
+        'C', 'o', 'n', 'n', 'e', 'c', 't', 'i', 'o', 'n', ':', ' ', 'c', 'l', 'o', 's', 'e',
+        '\r', '\n', '\r', '\n'
+    };
+    int nul_result = http_send_raw_local(port, nul_request, sizeof(nul_request),
+                                         response, sizeof(response));
+    int nul_is_bad_request = output_contains(response, "HTTP/1.1 400 Bad Request");
+
+    int health_result = http_get_local(port, "/healthz", response, sizeof(response));
+    int health_is_ok = output_contains(response, "HTTP/1.1 200 OK");
+    int server_exit = stop_fconcat_server(pid);
+
+    ASSERT_EQ(0, bad_version_result);
+    ASSERT_TRUE(bad_version_is_bad_request);
+    ASSERT_EQ(0, empty_target_result);
+    ASSERT_TRUE(empty_target_is_bad_request);
+    ASSERT_EQ(0, control_target_result);
+    ASSERT_TRUE(control_target_is_bad_request);
+    ASSERT_EQ(0, nul_result);
+    ASSERT_TRUE(nul_is_bad_request);
+    ASSERT_EQ(0, health_result);
+    ASSERT_EQ(0, server_exit);
+    ASSERT_TRUE(health_is_ok);
+
+    return 0;
+}
+
 TEST(integ_server_denied_root)
 {
     create_test_root();
@@ -1489,6 +1623,7 @@ int test_traversal_main(void)
     RUN_TEST(integ_server_startup_oom_cleanup_under_leak_guard);
     RUN_TEST(integ_server_health_and_concat_stream);
     RUN_TEST(integ_server_malformed_query_cleanup);
+    RUN_TEST(integ_server_rejects_malformed_request_line);
     RUN_TEST(integ_server_denied_root);
     RUN_TEST(integ_server_client_disconnect_cleanup);
     RUN_TEST(integ_server_rejects_invalid_config);
