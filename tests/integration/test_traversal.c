@@ -1188,6 +1188,46 @@ TEST(integ_oom_cleanup_under_leak_guard)
 #endif
 }
 
+TEST(integ_server_startup_oom_cleanup_under_leak_guard)
+{
+#ifndef FCONCAT_LEAK_GUARD
+    return 0;
+#else
+    create_test_root();
+    create_dir("server-oom-root");
+
+    char root[TEST_PATH_MAX];
+    snprintf(root, sizeof(root), "%s/server-oom-root", test_root);
+
+    for (int fail_after = 0; fail_after <= 64; fail_after++) {
+        char env[128];
+        snprintf(env, sizeof(env), "LEAK_GUARD_FAIL_AFTER=%d", fail_after);
+
+        char output[8192];
+        int exit_code = run_fconcat_env(output, sizeof(output), env,
+                                        "--serve --listen 256.256.256.256:1 --allow-root '%s' --workers 1 --queue 1",
+                                        root);
+        ASSERT_NE(23, exit_code);
+        ASSERT_FALSE(output_contains(output, "LEAK_GUARD: FAILED"));
+    }
+
+    const int late_fail_points[] = {96, 128, 192};
+    for (size_t i = 0; i < sizeof(late_fail_points) / sizeof(late_fail_points[0]); i++) {
+        char env[128];
+        snprintf(env, sizeof(env), "LEAK_GUARD_FAIL_AFTER=%d", late_fail_points[i]);
+
+        char output[8192];
+        int exit_code = run_fconcat_env(output, sizeof(output), env,
+                                        "--serve --listen 256.256.256.256:1 --allow-root '%s' --workers 1 --queue 1",
+                                        root);
+        ASSERT_NE(23, exit_code);
+        ASSERT_FALSE(output_contains(output, "LEAK_GUARD: FAILED"));
+    }
+
+    return 0;
+#endif
+}
+
 TEST(integ_server_health_and_concat_stream)
 {
     create_test_root();
@@ -1440,6 +1480,7 @@ int test_traversal_main(void)
     RUN_TEST(integ_removed_plugin_option_is_rejected);
     RUN_TEST(integ_benchmark_script_check);
     RUN_TEST(integ_oom_cleanup_under_leak_guard);
+    RUN_TEST(integ_server_startup_oom_cleanup_under_leak_guard);
     RUN_TEST(integ_server_health_and_concat_stream);
     RUN_TEST(integ_server_malformed_query_cleanup);
     RUN_TEST(integ_server_denied_root);
