@@ -135,6 +135,23 @@ TEST(buffered_sink_flushes_and_closes_downstream)
     return 0;
 }
 
+TEST(buffered_sink_destroy_closes_owned_downstream)
+{
+    TestOutputSink downstream;
+    test_sink_init(&downstream);
+
+    BufferedOutputSink buffered;
+    ASSERT_EQ(0, buffered_output_sink_init(&buffered, &downstream.sink, 8, 1));
+    ASSERT_EQ(0, output_sink_write(&buffered.sink, "held", 4));
+
+    buffered_output_sink_destroy(&buffered);
+
+    ASSERT_EQ(4, downstream.used);
+    ASSERT_TRUE(memcmp(downstream.data, "held", 4) == 0);
+    ASSERT_EQ(1, downstream.close_count);
+    return 0;
+}
+
 TEST(buffered_sink_rejects_zero_capacity_state)
 {
     TestOutputSink downstream;
@@ -291,6 +308,7 @@ int test_output_main(void)
     TEST_SUITE_BEGIN("OutputSink Safety");
     RUN_TEST(output_sink_null_inputs_are_safe);
     RUN_TEST(buffered_sink_flushes_and_closes_downstream);
+    RUN_TEST(buffered_sink_destroy_closes_owned_downstream);
     RUN_TEST(buffered_sink_rejects_zero_capacity_state);
     RUN_TEST(buffered_sink_rejects_corrupt_state);
     RUN_TEST(buffered_sink_close_rejects_corrupt_state_but_closes_downstream);

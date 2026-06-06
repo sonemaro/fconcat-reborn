@@ -278,6 +278,9 @@ void buffered_output_sink_destroy(BufferedOutputSink *sink)
     if (!sink)
         return;
 
+    if (sink->owns_downstream && sink->downstream && !sink->closed)
+        (void)output_sink_close(&sink->sink);
+
     free(sink->buffer);
     memset(sink, 0, sizeof(*sink));
 }
