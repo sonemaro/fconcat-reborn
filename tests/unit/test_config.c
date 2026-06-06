@@ -41,6 +41,22 @@ TEST(config_manager_has_resolved_config)
     return 0;
 }
 
+TEST(config_manager_destroy_handles_corrupt_layer_count)
+{
+    ConfigManager *mgr = config_manager_create();
+    ASSERT_NOT_NULL(mgr);
+    ASSERT_EQ(0, config_load_defaults(mgr));
+    mgr->layer_count = MAX_CONFIG_LAYERS + 1;
+    config_manager_destroy(mgr);
+
+    mgr = config_manager_create();
+    ASSERT_NOT_NULL(mgr);
+    ASSERT_EQ(0, config_load_defaults(mgr));
+    mgr->layer_count = -1;
+    config_manager_destroy(mgr);
+    return 0;
+}
+
 /* =========================================================================
  * ConfigValue Tests
  * ========================================================================= */
@@ -161,6 +177,31 @@ TEST(config_layer_get_value_null_params)
     ASSERT_NULL(value);
     
     config_manager_destroy(mgr);
+    return 0;
+}
+
+TEST(config_layer_get_value_rejects_corrupt_counts)
+{
+    ConfigValue value;
+    memset(&value, 0, sizeof(value));
+    ASSERT_EQ(0, config_value_init(&value, "present", CONFIG_TYPE_INT));
+    config_value_set_int(&value, 7);
+
+    ConfigLayer layer;
+    memset(&layer, 0, sizeof(layer));
+    layer.values = &value;
+    layer.value_capacity = 1;
+    layer.value_count = 2;
+    ASSERT_NULL(config_layer_get_value(&layer, "present"));
+
+    layer.value_count = -1;
+    ASSERT_NULL(config_layer_get_value(&layer, "present"));
+
+    layer.value_count = 1;
+    layer.value_capacity = -1;
+    ASSERT_NULL(config_layer_get_value(&layer, "present"));
+
+    config_value_cleanup(&value);
     return 0;
 }
 
@@ -378,6 +419,53 @@ TEST(config_get_bool_null_manager)
     return 0;
 }
 
+TEST(config_getters_reject_corrupt_layer_count)
+{
+    ConfigManager *mgr = config_manager_create();
+    ASSERT_NOT_NULL(mgr);
+    ASSERT_EQ(0, config_load_defaults(mgr));
+
+    int saved_layer_count = mgr->layer_count;
+
+    mgr->layer_count = MAX_CONFIG_LAYERS + 1;
+    ASSERT_NULL(config_get_string(mgr, "listen"));
+    ASSERT_EQ(0, config_get_int(mgr, "mode"));
+    ASSERT_FALSE(config_get_bool(mgr, "show_size"));
+
+    mgr->layer_count = -1;
+    ASSERT_NULL(config_get_string(mgr, "listen"));
+    ASSERT_EQ(0, config_get_int(mgr, "mode"));
+    ASSERT_FALSE(config_get_bool(mgr, "show_size"));
+
+    mgr->layer_count = saved_layer_count;
+    config_manager_destroy(mgr);
+    return 0;
+}
+
+TEST(config_getters_reject_corrupt_value_counts)
+{
+    ConfigManager *mgr = config_manager_create();
+    ASSERT_NOT_NULL(mgr);
+    ASSERT_EQ(0, config_load_defaults(mgr));
+
+    ConfigLayer *layer = &mgr->layers[0];
+    int saved_count = layer->value_count;
+
+    layer->value_count = layer->value_capacity + 1;
+    ASSERT_NULL(config_get_string(mgr, "listen"));
+    ASSERT_EQ(0, config_get_int(mgr, "mode"));
+    ASSERT_FALSE(config_get_bool(mgr, "show_size"));
+
+    layer->value_count = -1;
+    ASSERT_NULL(config_get_string(mgr, "listen"));
+    ASSERT_EQ(0, config_get_int(mgr, "mode"));
+    ASSERT_FALSE(config_get_bool(mgr, "show_size"));
+
+    layer->value_count = saved_count;
+    config_manager_destroy(mgr);
+    return 0;
+}
+
 /* =========================================================================
  * Main Entry Point
  * ========================================================================= */
@@ -393,6 +481,7 @@ int test_config_main(void)
     RUN_TEST(config_manager_create_returns_valid_pointer);
     RUN_TEST(config_manager_destroy_null_is_safe);
     RUN_TEST(config_manager_has_resolved_config);
+    RUN_TEST(config_manager_destroy_handles_corrupt_layer_count);
     
     TEST_SUITE_BEGIN("ConfigValue Operations");
     RUN_TEST(config_value_init_string);
@@ -406,6 +495,7 @@ int test_config_main(void)
     RUN_TEST(config_layer_add_value_succeeds);
     RUN_TEST(config_layer_get_value_returns_null_for_missing_key);
     RUN_TEST(config_layer_get_value_null_params);
+    RUN_TEST(config_layer_get_value_rejects_corrupt_counts);
     RUN_TEST(config_layer_add_value_rejects_corrupt_counts);
     
     TEST_SUITE_BEGIN("Default Configuration");
@@ -427,6 +517,8 @@ int test_config_main(void)
     RUN_TEST(config_get_string_null_manager);
     RUN_TEST(config_get_int_null_manager);
     RUN_TEST(config_get_bool_null_manager);
+    RUN_TEST(config_getters_reject_corrupt_layer_count);
+    RUN_TEST(config_getters_reject_corrupt_value_counts);
     
     TEST_SUMMARY();
     

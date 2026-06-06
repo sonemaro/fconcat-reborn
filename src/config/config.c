@@ -2,11 +2,48 @@
 #include "../../include/fconcat_api.h"
 #include <errno.h>
 #include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#define CONFIG_LAYER_VALUE_LIMIT 4096
+
 static int config_value_set_string_checked(ConfigValue *value, const char *str);
+
+static int config_layer_value_storage_is_safe(const ConfigLayer *layer)
+{
+    if (!layer)
+        return 0;
+    if (layer->value_capacity < 0 || layer->value_capacity > CONFIG_LAYER_VALUE_LIMIT)
+        return 0;
+    if (layer->value_capacity > 0 && !layer->values)
+        return 0;
+    if ((size_t)layer->value_capacity > SIZE_MAX / sizeof(ConfigValue))
+        return 0;
+    return 1;
+}
+
+static int config_layer_values_are_valid(const ConfigLayer *layer)
+{
+    if (!config_layer_value_storage_is_safe(layer))
+        return 0;
+    return layer->value_count >= 0 && layer->value_count <= layer->value_capacity;
+}
+
+static int config_layer_cleanup_count(const ConfigLayer *layer)
+{
+    if (!config_layer_value_storage_is_safe(layer) || layer->value_count < 0)
+        return 0;
+    return layer->value_count <= layer->value_capacity ? layer->value_count : layer->value_capacity;
+}
+
+static int config_manager_layer_count_for_read(const ConfigManager *manager)
+{
+    if (!manager || manager->layer_count < 0 || manager->layer_count > MAX_CONFIG_LAYERS)
+        return -1;
+    return manager->layer_count;
+}
 
 static int config_layer_init(ConfigLayer *layer, ConfigSource source, int priority)
 {
@@ -26,7 +63,8 @@ static void config_layer_cleanup(ConfigLayer *layer)
     if (!layer)
         return;
 
-    for (int i = 0; i < layer->value_count; i++)
+    int value_count = config_layer_cleanup_count(layer);
+    for (int i = 0; i < value_count; i++)
         config_value_cleanup(&layer->values[i]);
 
     free(layer->values);
@@ -242,7 +280,7 @@ void config_manager_destroy(ConfigManager *manager)
         return;
 
     pthread_mutex_lock(&manager->mutex);
-    for (int i = 0; i < manager->layer_count; i++)
+    for (int i = 0; i < MAX_CONFIG_LAYERS; i++)
         config_layer_cleanup(&manager->layers[i]);
     resolved_config_cleanup(manager->resolved);
     free(manager->resolved);
@@ -556,9 +594,15 @@ const char *config_get_string(ConfigManager *manager, const char *key)
     if (!manager || !key)
         return NULL;
 
-    for (int i = manager->layer_count - 1; i >= 0; i--)
+    int layer_count = config_manager_layer_count_for_read(manager);
+    if (layer_count < 0)
+        return NULL;
+
+    for (int i = layer_count - 1; i >= 0; i--)
     {
         ConfigLayer *layer = &manager->layers[i];
+        if (!config_layer_values_are_valid(layer))
+            return NULL;
         for (int j = 0; j < layer->value_count; j++)
         {
             ConfigValue *value = &layer->values[j];
@@ -575,9 +619,15 @@ int config_get_int(ConfigManager *manager, const char *key)
     if (!manager || !key)
         return 0;
 
-    for (int i = manager->layer_count - 1; i >= 0; i--)
+    int layer_count = config_manager_layer_count_for_read(manager);
+    if (layer_count < 0)
+        return 0;
+
+    for (int i = layer_count - 1; i >= 0; i--)
     {
         ConfigLayer *layer = &manager->layers[i];
+        if (!config_layer_values_are_valid(layer))
+            return 0;
         for (int j = 0; j < layer->value_count; j++)
         {
             ConfigValue *value = &layer->values[j];
@@ -594,9 +644,15 @@ bool config_get_bool(ConfigManager *manager, const char *key)
     if (!manager || !key)
         return false;
 
-    for (int i = manager->layer_count - 1; i >= 0; i--)
+    int layer_count = config_manager_layer_count_for_read(manager);
+    if (layer_count < 0)
+        return false;
+
+    for (int i = layer_count - 1; i >= 0; i--)
     {
         ConfigLayer *layer = &manager->layers[i];
+        if (!config_layer_values_are_valid(layer))
+            return false;
         for (int j = 0; j < layer->value_count; j++)
         {
             ConfigValue *value = &layer->values[j];
@@ -670,17 +726,20 @@ int config_layer_add_value(ConfigLayer *layer, const char *key, ConfigType type)
 {
     if (!layer || !key)
         return -1;
-    if (layer->value_count < 0 || layer->value_capacity < 0 ||
-        layer->value_count > layer->value_capacity)
-        return -1;
-    if (!layer->values && layer->value_capacity > 0)
+    if (!config_layer_values_are_valid(layer))
         return -1;
 
     if (layer->value_count >= layer->value_capacity)
     {
-        if (layer->value_capacity > INT_MAX / 2)
+        if (layer->value_capacity >= CONFIG_LAYER_VALUE_LIMIT)
             return -1;
         int new_capacity = layer->value_capacity > 0 ? layer->value_capacity * 2 : 32;
+        if (new_capacity < layer->value_capacity)
+            return -1;
+        if (new_capacity > CONFIG_LAYER_VALUE_LIMIT)
+            new_capacity = CONFIG_LAYER_VALUE_LIMIT;
+        if ((size_t)new_capacity > SIZE_MAX / sizeof(ConfigValue))
+            return -1;
         ConfigValue *new_values = realloc(layer->values, (size_t)new_capacity * sizeof(ConfigValue));
         if (!new_values)
             return -1;
@@ -699,6 +758,8 @@ int config_layer_add_value(ConfigLayer *layer, const char *key, ConfigType type)
 ConfigValue *config_layer_get_value(ConfigLayer *layer, const char *key)
 {
     if (!layer || !key)
+        return NULL;
+    if (!config_layer_values_are_valid(layer))
         return NULL;
 
     for (int i = 0; i < layer->value_count; i++)
