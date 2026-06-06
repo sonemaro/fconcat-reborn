@@ -76,6 +76,51 @@ TEST(error_reporting_handles_corrupt_counts)
     return 0;
 }
 
+TEST(error_destroy_cleans_entries_with_corrupt_negative_count)
+{
+    ErrorManager *manager = error_manager_create();
+    ASSERT_NOT_NULL(manager);
+
+    error_report(manager, FCONCAT_ERROR_INVALID_ARGS, "recorded");
+    ASSERT_EQ(1, error_get_count(manager));
+
+    manager->error_count = -1;
+    error_manager_destroy(manager);
+    return 0;
+}
+
+TEST(error_clear_cleans_entries_with_corrupt_negative_count)
+{
+    ErrorManager *manager = error_manager_create();
+    ASSERT_NOT_NULL(manager);
+
+    error_report(manager, FCONCAT_ERROR_INVALID_ARGS, "recorded");
+    ASSERT_EQ(1, error_get_count(manager));
+
+    manager->error_count = -1;
+    error_clear(manager);
+    ASSERT_EQ(0, error_get_count(manager));
+
+    error_manager_destroy(manager);
+    return 0;
+}
+
+TEST(error_append_cleans_entries_before_repairing_negative_count)
+{
+    ErrorManager *manager = error_manager_create();
+    ASSERT_NOT_NULL(manager);
+
+    error_report(manager, FCONCAT_ERROR_INVALID_ARGS, "first");
+    ASSERT_EQ(1, error_get_count(manager));
+
+    manager->error_count = -1;
+    error_report(manager, FCONCAT_ERROR_INVALID_ARGS, "second");
+    ASSERT_EQ(1, error_get_count(manager));
+
+    error_manager_destroy(manager);
+    return 0;
+}
+
 int test_error_main(void)
 {
     tests_run = 0;
@@ -86,6 +131,9 @@ int test_error_main(void)
     RUN_TEST(error_reporting_rejects_null_inputs);
     RUN_TEST(error_reporting_respects_capacity);
     RUN_TEST(error_reporting_handles_corrupt_counts);
+    RUN_TEST(error_destroy_cleans_entries_with_corrupt_negative_count);
+    RUN_TEST(error_clear_cleans_entries_with_corrupt_negative_count);
+    RUN_TEST(error_append_cleans_entries_before_repairing_negative_count);
 
     TEST_SUMMARY();
     return TEST_EXIT_CODE();

@@ -15,12 +15,33 @@ static int error_count_clamped(int count)
     return count;
 }
 
+static void error_context_cleanup(ErrorContext *ctx);
+
+static int error_cleanup_count(const ErrorManager *manager)
+{
+    if (!manager)
+        return 0;
+    if (manager->error_count < 0 || manager->error_count > MAX_ERRORS)
+        return MAX_ERRORS;
+    return manager->error_count;
+}
+
+static void error_cleanup_tracked_slots(ErrorManager *manager)
+{
+    int error_count = error_cleanup_count(manager);
+    for (int i = 0; i < error_count; i++)
+        error_context_cleanup(&manager->errors[i]);
+}
+
 static int error_prepare_append_locked(ErrorManager *manager)
 {
     if (!manager)
         return -1;
     if (manager->error_count < 0)
+    {
+        error_cleanup_tracked_slots(manager);
         manager->error_count = 0;
+    }
     if (manager->error_count >= MAX_ERRORS)
     {
         manager->error_count = MAX_ERRORS;
@@ -72,9 +93,7 @@ void error_manager_destroy(ErrorManager *manager)
     pthread_mutex_lock(&manager->mutex);
 
     // Free all error messages
-    int error_count = error_count_clamped(manager->error_count);
-    for (int i = 0; i < error_count; i++)
-        error_context_cleanup(&manager->errors[i]);
+    error_cleanup_tracked_slots(manager);
 
     pthread_mutex_unlock(&manager->mutex);
     pthread_mutex_destroy(&manager->mutex);
@@ -224,9 +243,7 @@ void error_clear(ErrorManager *manager)
     pthread_mutex_lock(&manager->mutex);
 
     // Free all error messages
-    int error_count = error_count_clamped(manager->error_count);
-    for (int i = 0; i < error_count; i++)
-        error_context_cleanup(&manager->errors[i]);
+    error_cleanup_tracked_slots(manager);
 
     manager->error_count = 0;
     manager->warning_count = 0;
