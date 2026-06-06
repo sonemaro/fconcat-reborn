@@ -105,6 +105,28 @@ TEST(context_file_counter_saturates)
     return 0;
 }
 
+TEST(process_fconcat_document_rejects_missing_callbacks)
+{
+    ResolvedConfig config;
+    memset(&config, 0, sizeof(config));
+    config.input_directory = "/definitely-not-a-fconcat-test-root";
+    config.output_file = "out.txt";
+
+    FconcatContext empty_ctx;
+    memset(&empty_ctx, 0, sizeof(empty_ctx));
+    ASSERT_EQ(-1, process_fconcat_document(&empty_ctx, &config, NULL, NULL));
+
+    OutputSink sink;
+    init_context_test_sink(&sink);
+    FconcatContext partial_ctx;
+    memset(&partial_ctx, 0, sizeof(partial_ctx));
+    partial_ctx.write_output = context_write_output;
+    partial_ctx.write_output_fmt = context_write_output_fmt;
+    partial_ctx.get_config_bool = context_get_config_bool;
+    ASSERT_EQ(-1, process_fconcat_document(&partial_ctx, &config, NULL, NULL));
+    return 0;
+}
+
 int test_context_main(void)
 {
     tests_run = 0;
@@ -116,6 +138,7 @@ int test_context_main(void)
     RUN_TEST(create_fconcat_context_accepts_minimal_valid_inputs);
     RUN_TEST(context_progress_counters_saturate);
     RUN_TEST(context_file_counter_saturates);
+    RUN_TEST(process_fconcat_document_rejects_missing_callbacks);
 
     TEST_SUMMARY();
     return TEST_EXIT_CODE();

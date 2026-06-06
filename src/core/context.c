@@ -36,6 +36,17 @@ static int direct_copy_enabled(void)
     return env && strcmp(env, "1") == 0;
 }
 
+static int context_document_callbacks_are_valid(const FconcatContext *ctx)
+{
+    return ctx &&
+           ctx->get_config_bool &&
+           ctx->log &&
+           ctx->write_output &&
+           ctx->write_output_fmt &&
+           ctx->error &&
+           ctx->warning;
+}
+
 static size_t stat_size_to_size_t(off_t size)
 {
     if (size <= 0)
@@ -403,7 +414,7 @@ static size_t resolve_prefix_cache_budget(int null_output)
 int process_fconcat_document(FconcatContext *ctx, const ResolvedConfig *config,
                              int (*should_stop)(void *user_data), void *user_data)
 {
-    if (!ctx || !config || !config->input_directory)
+    if (!context_document_callbacks_are_valid(ctx) || !config || !config->input_directory)
         return -1;
 
     InternalContextState *internal = (InternalContextState *)ctx->internal_state;
