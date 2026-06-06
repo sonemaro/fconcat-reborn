@@ -110,7 +110,8 @@ character. Patterns match against both full paths and basenames.
 Output
 ------
 
-Output is always deterministic plain text. There is no JSON mode and no plugin
+Output is deterministic plain text. Directory entries are emitted in
+lexicographic order within each directory. There is no JSON mode and no plugin
 system.
 
 ```text
@@ -142,8 +143,8 @@ Safety Model
   its own processing state.
 - Zero-leak release contract: `make sanitize-test` is a blocking gate. It runs
   the full test suite with AddressSanitizer, UndefinedBehaviorSanitizer, and a
-  project-local allocation leak guard; any live allocation at process exit is a
-  release failure.
+  project-local allocation leak guard, including simulated allocation-failure
+  subprocesses; any live allocation at process exit is a release failure.
 
 Development
 -----------
@@ -153,8 +154,8 @@ make                # Build fconcat
 make test           # Build and run the test suite
 make sanitize-test  # Run tests under ASan/UBSan plus leak guard
 make release        # Optimized build
-make bench          # Raw traversal benchmark, default BENCH_ROOT=$HOME/projects
-make bench-real     # Full output benchmark, default BENCH_ROOT=$HOME/projects
+make bench          # Raw traversal benchmark to /dev/null
+make bench-real     # Full output benchmark with bytes written
 make clean          # Remove local build outputs
 ```
 
@@ -163,7 +164,13 @@ Useful benchmark overrides:
 ```bash
 make bench BENCH_ROOT=/path/to/tree BENCH_ITERATIONS=10
 make bench-real BENCH_ROOT=/path/to/tree BENCH_OUTPUT=/tmp/fconcat.txt
+make bench-real BENCH_ROOT=/path/to/tree BENCH_WARMUP=0
+BENCH_ROOT=/path/to/tree sh scripts/bench.sh check
 ```
+
+Benchmarks print the binary path, root, file count, disk usage, platform, run
+times, warmup setting, and a min/avg/max summary so results can be compared
+across runs.
 
 The codebase is organized by subsystem:
 

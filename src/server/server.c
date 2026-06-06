@@ -290,14 +290,14 @@ static int queue_pop(ConnectionQueue *queue)
     return fd;
 }
 
-static char from_hex(char c)
+static int from_hex(char c)
 {
     if (c >= '0' && c <= '9')
-        return (char)(c - '0');
+        return c - '0';
     if (c >= 'a' && c <= 'f')
-        return (char)(c - 'a' + 10);
+        return c - 'a' + 10;
     if (c >= 'A' && c <= 'F')
-        return (char)(c - 'A' + 10);
+        return c - 'A' + 10;
     return -1;
 }
 
@@ -312,8 +312,8 @@ static char *url_decode(const char *value, size_t len)
     {
         if (value[i] == '%' && i + 2 < len)
         {
-            char hi = from_hex(value[i + 1]);
-            char lo = from_hex(value[i + 2]);
+            int hi = from_hex(value[i + 1]);
+            int lo = from_hex(value[i + 2]);
             if (hi < 0 || lo < 0)
             {
                 free(out);

@@ -85,41 +85,10 @@ release:
 	$(MAKE) CFLAGS="-O3 -DNDEBUG" all
 
 bench: release
-	@root="$${BENCH_ROOT:-$$HOME/projects}"; \
-	iterations="$${BENCH_ITERATIONS:-7}"; \
-	if [ ! -d "$$root" ]; then echo "BENCH_ROOT is not a directory: $$root" >&2; exit 1; fi; \
-	echo "Benchmarking raw traversal $$root -> /dev/null ($$iterations runs after warmup)"; \
-	./$(TARGET) "$$root" /dev/null >/dev/null; \
-	i=1; \
-	while [ "$$i" -le "$$iterations" ]; do \
-		start_ns="$$(date +%s%N)"; \
-		./$(TARGET) "$$root" /dev/null >/dev/null; \
-		status="$$?"; \
-		end_ns="$$(date +%s%N)"; \
-		if [ "$$status" -ne 0 ]; then exit "$$status"; fi; \
-		awk -v i="$$i" -v ns="$$((end_ns - start_ns))" 'BEGIN { printf "run %d %.3f\n", i, ns / 1000000000 }'; \
-		i="$$((i + 1))"; \
-	done
+	@BENCH_BIN=./$(TARGET) sh scripts/bench.sh raw
 
 bench-real: release
-	@root="$${BENCH_ROOT:-$$HOME/projects}"; \
-	output="$${BENCH_OUTPUT:-$$HOME/fconcat-bench-real-output.txt}"; \
-	iterations="$${BENCH_ITERATIONS:-3}"; \
-	if [ ! -d "$$root" ]; then echo "BENCH_ROOT is not a directory: $$root" >&2; exit 1; fi; \
-	echo "Benchmarking real output $$root -> $$output ($$iterations runs)"; \
-	i=1; \
-	while [ "$$i" -le "$$iterations" ]; do \
-		rm -f "$$output"; \
-		start_ns="$$(date +%s%N)"; \
-		./$(TARGET) "$$root" "$$output" >/dev/null; \
-		status="$$?"; \
-		end_ns="$$(date +%s%N)"; \
-		if [ "$$status" -ne 0 ]; then exit "$$status"; fi; \
-		bytes="$$(wc -c < "$$output")"; \
-		awk -v i="$$i" -v ns="$$((end_ns - start_ns))" -v bytes="$$bytes" 'BEGIN { printf "run %d %.3f bytes %s\n", i, ns / 1000000000, bytes }'; \
-		i="$$((i + 1))"; \
-	done; \
-	if [ "$${BENCH_KEEP_OUTPUT:-0}" != "1" ]; then rm -f "$$output"; fi
+	@BENCH_BIN=./$(TARGET) sh scripts/bench.sh real
 
 install: $(TARGET)
 	install -d "$(DESTDIR)$(BINDIR)"

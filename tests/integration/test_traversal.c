@@ -247,6 +247,68 @@ static int run_fconcat(char *output, size_t output_size, const char *args_fmt, .
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
+static int run_fconcat_env(char *output, size_t output_size, const char *env_prefix, const char *args_fmt, ...)
+{
+    char args[1024];
+    va_list ap;
+    va_start(ap, args_fmt);
+    vsnprintf(args, sizeof(args), args_fmt, ap);
+    va_end(ap);
+
+    char cmd[2300];
+    int n;
+    if (env_prefix && env_prefix[0] != '\0') {
+        n = snprintf(cmd, sizeof(cmd), "%s %s %s 2>&1", env_prefix, fconcat_bin, args);
+    } else {
+        n = snprintf(cmd, sizeof(cmd), "%s %s 2>&1", fconcat_bin, args);
+    }
+    if (n < 0 || (size_t)n >= sizeof(cmd)) return -1;
+
+    FILE *fp = popen(cmd, "r");
+    if (!fp) return -1;
+
+    size_t total = 0;
+    if (output && output_size > 0) {
+        output[0] = '\0';
+        while (total < output_size - 1) {
+            size_t rd = fread(output + total, 1, output_size - 1 - total, fp);
+            if (rd == 0) break;
+            total += rd;
+        }
+        output[total] = '\0';
+    }
+
+    int status = pclose(fp);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+static int run_shell_capture(char *output, size_t output_size, const char *cmd_fmt, ...)
+{
+    char cmd[2048];
+    va_list ap;
+    va_start(ap, cmd_fmt);
+    int n = vsnprintf(cmd, sizeof(cmd), cmd_fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= sizeof(cmd)) return -1;
+
+    FILE *fp = popen(cmd, "r");
+    if (!fp) return -1;
+
+    size_t total = 0;
+    if (output && output_size > 0) {
+        output[0] = '\0';
+        while (total < output_size - 1) {
+            size_t rd = fread(output + total, 1, output_size - 1 - total, fp);
+            if (rd == 0) break;
+            total += rd;
+        }
+        output[total] = '\0';
+    }
+
+    int status = pclose(fp);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
 /**
  * Check if output contains a substring
  */
@@ -517,6 +579,80 @@ TEST(integ_single_file_golden_output)
     return 0;
 }
 
+TEST(integ_show_size_golden_output)
+{
+    create_test_root();
+    create_dir("golden-size");
+    create_file("golden-size/a.txt", "abc\n");
+
+    char cmdout[1024];
+    char content[8192];
+    char input_path[TEST_PATH_MAX];
+    snprintf(input_path, sizeof(input_path), "%s/golden-size", test_root);
+
+    int exit_code = run_fconcat(cmdout, sizeof(cmdout), "'%s' '%s' --show-size", input_path, get_output_path());
+
+    const char *expected =
+        "Directory Structure:\n"
+        "==================\n"
+        "\n"
+        "FILE [1 KB] a.txt\n"
+        "\n"
+        "File Contents:\n"
+        "=============\n"
+        "\n"
+        "// File: a.txt\n"
+        "abc\n"
+        "\n"
+        "\n";
+
+    ASSERT_EQ(0, exit_code);
+    ASSERT_EQ(0, read_output_file(get_output_path(), content, sizeof(content)));
+    ASSERT_STR_EQ(expected, content);
+
+    return 0;
+}
+
+TEST(integ_sorted_golden_output)
+{
+    create_test_root();
+    create_dir("golden-sorted");
+    create_file("golden-sorted/b.txt", "bravo\n");
+    create_file("golden-sorted/a.txt", "alpha\n");
+
+    char cmdout[1024];
+    char content[8192];
+    char input_path[TEST_PATH_MAX];
+    snprintf(input_path, sizeof(input_path), "%s/golden-sorted", test_root);
+
+    int exit_code = run_fconcat(cmdout, sizeof(cmdout), "'%s' '%s'", input_path, get_output_path());
+
+    const char *expected =
+        "Directory Structure:\n"
+        "==================\n"
+        "\n"
+        "FILE a.txt\n"
+        "FILE b.txt\n"
+        "\n"
+        "File Contents:\n"
+        "=============\n"
+        "\n"
+        "// File: a.txt\n"
+        "alpha\n"
+        "\n"
+        "\n"
+        "// File: b.txt\n"
+        "bravo\n"
+        "\n"
+        "\n";
+
+    ASSERT_EQ(0, exit_code);
+    ASSERT_EQ(0, read_output_file(get_output_path(), content, sizeof(content)));
+    ASSERT_STR_EQ(expected, content);
+
+    return 0;
+}
+
 TEST(integ_output_file_self_exclusion)
 {
     create_test_root();
@@ -562,7 +698,8 @@ TEST(integ_symlink_skip_default)
     ASSERT_EQ(0, exit_code);
     ASSERT_EQ(0, read_output_file(get_output_path(), content, sizeof(content)));
     ASSERT_TRUE(output_contains(content, "target.txt"));
-    /* With default symlink handling, the link should be skipped or noted */
+    ASSERT_FALSE(output_contains(content, "link.txt"));
+    ASSERT_EQ(1, count_occurrences(content, "I am the target"));
     
     return 0;
 }
@@ -638,6 +775,30 @@ TEST(integ_symlink_placeholder)
     return 0;
 }
 
+TEST(integ_symlink_include)
+{
+    create_test_root();
+    create_dir("syminclude");
+    create_file("syminclude/target.txt", "included target");
+    create_symlink_file("target.txt", "syminclude/link.txt");
+
+    char cmdout[1024];
+    char content[8192];
+    char input_path[TEST_PATH_MAX];
+    snprintf(input_path, sizeof(input_path), "%s/syminclude", test_root);
+
+    int exit_code = run_fconcat(cmdout, sizeof(cmdout),
+                                "'%s' '%s' --symlinks include", input_path, get_output_path());
+
+    ASSERT_EQ(0, exit_code);
+    ASSERT_EQ(0, read_output_file(get_output_path(), content, sizeof(content)));
+    ASSERT_TRUE(output_contains(content, "target.txt"));
+    ASSERT_TRUE(output_contains(content, "link.txt"));
+    ASSERT_EQ(2, count_occurrences(content, "included target"));
+
+    return 0;
+}
+
 /* =========================================================================
  * Binary File Tests
  * ========================================================================= */
@@ -661,7 +822,8 @@ TEST(integ_binary_file_detection)
     /* Text file should be included */
     ASSERT_TRUE(output_contains(content, "text.txt"));
     ASSERT_TRUE(output_contains(content, "This is plain text"));
-    /* Binary file should be filtered out or marked as binary */
+    ASSERT_FALSE(output_contains(content, "binary.bin"));
+    ASSERT_FALSE(output_contains(content, "[Binary file content not displayed]"));
     
     return 0;
 }
@@ -708,6 +870,42 @@ TEST(integ_large_text_file_streaming)
     ASSERT_TRUE(output_contains(content, "TAIL-MARKER"));
     free(content);
 
+    return 0;
+}
+
+TEST(integ_prefix_cache_disabled_matches_default)
+{
+    create_test_root();
+    create_dir("prefix-cache");
+    create_file("prefix-cache/a.txt", "alpha\n");
+    create_large_text_file("prefix-cache/big.txt", 80 * 1024);
+
+    char cmdout[2048];
+    char *default_content = malloc(140 * 1024);
+    char *disabled_content = malloc(140 * 1024);
+    ASSERT_NOT_NULL(default_content);
+    ASSERT_NOT_NULL(disabled_content);
+
+    char input_path[TEST_PATH_MAX];
+    char output_default[TEST_PATH_MAX];
+    char output_disabled[TEST_PATH_MAX];
+    snprintf(input_path, sizeof(input_path), "%s/prefix-cache", test_root);
+    snprintf(output_default, sizeof(output_default), "%s/prefix-default.txt", test_root);
+    snprintf(output_disabled, sizeof(output_disabled), "%s/prefix-disabled.txt", test_root);
+
+    int exit_default = run_fconcat(cmdout, sizeof(cmdout), "'%s' '%s'", input_path, output_default);
+    int exit_disabled = run_fconcat_env(cmdout, sizeof(cmdout),
+                                        "FCONCAT_PREFIX_CACHE_MB=0 FCONCAT_PREFIX_FILE_KB=1",
+                                        "'%s' '%s'", input_path, output_disabled);
+
+    ASSERT_EQ(0, exit_default);
+    ASSERT_EQ(0, exit_disabled);
+    ASSERT_EQ(0, read_output_file(output_default, default_content, 140 * 1024));
+    ASSERT_EQ(0, read_output_file(output_disabled, disabled_content, 140 * 1024));
+    ASSERT_STR_EQ(default_content, disabled_content);
+
+    free(default_content);
+    free(disabled_content);
     return 0;
 }
 
@@ -929,6 +1127,61 @@ TEST(integ_removed_plugin_option_is_rejected)
     return 0;
 }
 
+TEST(integ_benchmark_script_check)
+{
+    create_test_root();
+    create_dir("bench-check");
+
+    char root[TEST_PATH_MAX];
+    snprintf(root, sizeof(root), "%s/bench-check", test_root);
+
+    char output[8192];
+    int ok = run_shell_capture(output, sizeof(output),
+                               "BENCH_BIN='./fconcat' BENCH_ROOT='%s' sh scripts/bench.sh check 2>&1",
+                               root);
+    ASSERT_EQ(0, ok);
+    ASSERT_TRUE(output_contains(output, "mode=check"));
+    ASSERT_TRUE(output_contains(output, "BENCH_CHECK: OK"));
+
+    int bad = run_shell_capture(output, sizeof(output),
+                                "BENCH_BIN='./fconcat' BENCH_ROOT='%s/missing' sh scripts/bench.sh check 2>&1",
+                                root);
+    ASSERT_NE(0, bad);
+    ASSERT_TRUE(output_contains(output, "BENCH_ROOT is not a directory"));
+
+    return 0;
+}
+
+TEST(integ_oom_cleanup_under_leak_guard)
+{
+#ifndef FCONCAT_LEAK_GUARD
+    return 0;
+#else
+    create_test_root();
+    create_dir("oom");
+    create_file("oom/a.txt", "oom path\n");
+
+    char input_path[TEST_PATH_MAX];
+    char output_path[TEST_PATH_MAX];
+    snprintf(input_path, sizeof(input_path), "%s/oom", test_root);
+    snprintf(output_path, sizeof(output_path), "%s/oom-out.txt", test_root);
+
+    const char *fail_points[] = {"0", "8", "32"};
+    for (size_t i = 0; i < sizeof(fail_points) / sizeof(fail_points[0]); i++) {
+        char env[128];
+        snprintf(env, sizeof(env), "LEAK_GUARD_FAIL_AFTER=%s", fail_points[i]);
+
+        char output[8192];
+        int exit_code = run_fconcat_env(output, sizeof(output), env,
+                                        "'%s' '%s'", input_path, output_path);
+        ASSERT_NE(23, exit_code);
+        ASSERT_FALSE(output_contains(output, "LEAK_GUARD: FAILED"));
+    }
+
+    return 0;
+#endif
+}
+
 TEST(integ_server_health_and_concat_stream)
 {
     create_test_root();
@@ -968,6 +1221,41 @@ TEST(integ_server_health_and_concat_stream)
     ASSERT_TRUE(output_contains(response, "a.txt"));
     ASSERT_TRUE(output_contains(response, "server content"));
     ASSERT_FALSE(output_contains(response, "filtered out"));
+
+    return 0;
+}
+
+TEST(integ_server_malformed_query_cleanup)
+{
+    create_test_root();
+    create_dir("server-malformed");
+    create_file("server-malformed/a.txt", "server content");
+
+    char root[TEST_PATH_MAX];
+    snprintf(root, sizeof(root), "%s/server-malformed", test_root);
+
+    int port = 18500 + (getpid() % 20000);
+    pid_t pid = start_fconcat_server(root, port);
+    ASSERT_TRUE(pid > 0);
+
+    if (wait_for_server_ready(port) != 0) {
+        (void)stop_fconcat_server(pid);
+        ASSERT_TRUE(0);
+    }
+
+    char response[8192];
+    int malformed_result = http_get_local(port, "/concat?root=%zz", response, sizeof(response));
+    int malformed_is_bad_request = output_contains(response, "HTTP/1.1 400 Bad Request");
+
+    int health_result = http_get_local(port, "/healthz", response, sizeof(response));
+    int health_is_ok = output_contains(response, "HTTP/1.1 200 OK");
+    int server_exit = stop_fconcat_server(pid);
+
+    ASSERT_EQ(0, malformed_result);
+    ASSERT_TRUE(malformed_is_bad_request);
+    ASSERT_EQ(0, health_result);
+    ASSERT_EQ(0, server_exit);
+    ASSERT_TRUE(health_is_ok);
 
     return 0;
 }
@@ -1072,6 +1360,8 @@ int test_traversal_main(void)
     RUN_TEST(integ_nested_directories);
     RUN_TEST(integ_multiple_files);
     RUN_TEST(integ_single_file_golden_output);
+    RUN_TEST(integ_show_size_golden_output);
+    RUN_TEST(integ_sorted_golden_output);
     RUN_TEST(integ_output_file_self_exclusion);
     
     TEST_SUITE_BEGIN("Symlink Handling");
@@ -1079,11 +1369,13 @@ int test_traversal_main(void)
     RUN_TEST(integ_circular_symlink_no_hang);
     RUN_TEST(integ_broken_symlink);
     RUN_TEST(integ_symlink_placeholder);
+    RUN_TEST(integ_symlink_include);
     
     TEST_SUITE_BEGIN("Binary File Detection");
     RUN_TEST(integ_binary_file_detection);
     RUN_TEST(integ_binary_placeholder);
     RUN_TEST(integ_large_text_file_streaming);
+    RUN_TEST(integ_prefix_cache_disabled_matches_default);
     
     TEST_SUITE_BEGIN("Filter Patterns");
     RUN_TEST(integ_include_pattern);
@@ -1101,7 +1393,10 @@ int test_traversal_main(void)
     RUN_TEST(integ_nonexistent_directory);
     RUN_TEST(integ_removed_format_option_is_rejected);
     RUN_TEST(integ_removed_plugin_option_is_rejected);
+    RUN_TEST(integ_benchmark_script_check);
+    RUN_TEST(integ_oom_cleanup_under_leak_guard);
     RUN_TEST(integ_server_health_and_concat_stream);
+    RUN_TEST(integ_server_malformed_query_cleanup);
     RUN_TEST(integ_server_denied_root);
     RUN_TEST(integ_server_client_disconnect_cleanup);
     

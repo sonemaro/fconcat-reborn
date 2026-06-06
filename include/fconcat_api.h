@@ -59,12 +59,9 @@ extern "C"
         /**
          * Current processing state
          * 
-         * WARNING: These pointers are only valid during callback execution.
-         * - current_file_path points to a stack-allocated buffer
-         * - current_file_info points to a stack-allocated FileInfo struct
-         * 
-         * Do NOT store these pointers for later use. If you need the values
-         * after the callback returns, make a copy using strdup() or memcpy().
+         * WARNING: These pointers are only valid while the current file is
+         * being emitted. Do not store them for later use; copy the values if
+         * they must outlive the current processing step.
          */
         const char *current_file_path;
         const void *current_file_info; // Opaque pointer to FileInfo, valid only during callback

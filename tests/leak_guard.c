@@ -31,6 +31,9 @@ static size_t g_peak_live_bytes = 0;
 static size_t g_overflow_count = 0;
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_disabled = 0;
+static int g_fail_after_loaded = 0;
+static long long g_fail_after = -1;
+static size_t g_allocation_attempts = 0;
 
 void *__real_malloc(size_t size);
 void *__real_calloc(size_t nmemb, size_t size);
@@ -60,6 +63,35 @@ static void leak_guard_track_alloc(void *ptr, size_t size)
         g_overflow_count++;
     }
     pthread_mutex_unlock(&g_lock);
+}
+
+static int leak_guard_should_fail(void)
+{
+    if (g_disabled)
+        return 0;
+
+    pthread_mutex_lock(&g_lock);
+    if (!g_fail_after_loaded)
+    {
+        const char *value = getenv("LEAK_GUARD_FAIL_AFTER");
+        if (value && value[0] != '\0')
+        {
+            char *end = NULL;
+            long long parsed = strtoll(value, &end, 10);
+            if (end && *end == '\0' && parsed >= 0)
+                g_fail_after = parsed;
+        }
+        g_fail_after_loaded = 1;
+    }
+
+    int fail = 0;
+    if (g_fail_after >= 0)
+    {
+        fail = g_allocation_attempts >= (size_t)g_fail_after;
+        g_allocation_attempts++;
+    }
+    pthread_mutex_unlock(&g_lock);
+    return fail;
 }
 
 static size_t leak_guard_untrack(void *ptr)
@@ -113,6 +145,12 @@ static void leak_guard_resize(void *old_ptr, void *new_ptr, size_t new_size)
 
 void *__wrap_malloc(size_t size)
 {
+    if (leak_guard_should_fail())
+    {
+        errno = ENOMEM;
+        return NULL;
+    }
+
     void *ptr = __real_malloc(size);
     leak_guard_track_alloc(ptr, size);
     return ptr;
@@ -120,6 +158,12 @@ void *__wrap_malloc(size_t size)
 
 void *__wrap_calloc(size_t nmemb, size_t size)
 {
+    if (leak_guard_should_fail())
+    {
+        errno = ENOMEM;
+        return NULL;
+    }
+
     void *ptr = __real_calloc(nmemb, size);
     if (nmemb != 0 && size > SIZE_MAX / nmemb)
         leak_guard_track_alloc(ptr, 0);
@@ -137,6 +181,12 @@ void *__wrap_realloc(void *ptr, size_t size)
     {
         leak_guard_untrack(ptr);
         __real_free(ptr);
+        return NULL;
+    }
+
+    if (leak_guard_should_fail())
+    {
+        errno = ENOMEM;
         return NULL;
     }
 
@@ -160,6 +210,12 @@ char *__wrap_strdup(const char *s)
         return NULL;
     }
 
+    if (leak_guard_should_fail())
+    {
+        errno = ENOMEM;
+        return NULL;
+    }
+
     size_t len = strlen(s) + 1;
     char *copy = __real_malloc(len);
     if (!copy)
@@ -173,6 +229,12 @@ char *__wrap_realpath(const char *path, char *resolved_path)
 {
     if (resolved_path)
         return __real_realpath(path, resolved_path);
+
+    if (leak_guard_should_fail())
+    {
+        errno = ENOMEM;
+        return NULL;
+    }
 
     char *buffer = __real_malloc(PATH_MAX);
     if (!buffer)

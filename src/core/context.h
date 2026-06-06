@@ -15,20 +15,6 @@ extern "C"
     // Forward declarations
     struct FilterEngine;
 
-    // Directory entry callback type
-    typedef enum
-    {
-        ENTRY_TYPE_DIRECTORY,
-        ENTRY_TYPE_FILE
-    } EntryType;
-
-    typedef struct
-    {
-        int (*handle_entry)(FconcatContext *ctx, const char *path, EntryType type,
-                            FileInfo *info, int level, void *user_data);
-        void *user_data;
-    } DirectoryCallback;
-
     // Internal context state
     typedef struct
     {
@@ -55,10 +41,6 @@ extern "C"
     void update_context_for_file(FconcatContext *ctx, const char *filepath, const FileInfo *info);
     void update_context_progress(FconcatContext *ctx, size_t bytes_processed);
 
-    int traverse_directory(FconcatContext *ctx, const char *base_path, const char *relative_path,
-                           int level, DirectoryCallback *callback);
-    int process_directory_structure(FconcatContext *ctx, const char *base_path, const char *relative_path, int level);
-    int process_directory_content(FconcatContext *ctx, const char *base_path, const char *relative_path, int level);
     int process_fconcat_document(FconcatContext *ctx, const ResolvedConfig *config,
                                  int (*should_stop)(void *user_data), void *user_data);
 

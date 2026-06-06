@@ -57,8 +57,11 @@ typedef struct
 {
     char path[MAX_PATH];
     char relative_path[MAX_PATH];
-    DIR *dir;
+    struct dirent **entries;
+    int entry_count;
+    int next_entry;
     int level;
+    int visited_tracked;
 } DirStackEntry;
 
 typedef struct
@@ -152,6 +155,39 @@ static char *arena_strdup(Arena *arena, const char *value)
     return copy;
 }
 
+static void dir_entries_free(struct dirent **entries, int count)
+{
+    if (!entries)
+        return;
+
+    for (int i = 0; i < count; i++)
+        free(entries[i]);
+    free(entries);
+}
+
+static int skip_dot_entry(const struct dirent *entry)
+{
+    return entry &&
+           strcmp(entry->d_name, ".") != 0 &&
+           strcmp(entry->d_name, "..") != 0;
+}
+
+static int read_sorted_directory(const char *path, struct dirent ***entries, int *entry_count)
+{
+    if (!path || !entries || !entry_count)
+        return -1;
+
+    *entries = NULL;
+    *entry_count = 0;
+    errno = 0;
+    int count = scandir(path, entries, skip_dot_entry, alphasort);
+    if (count < 0)
+        return -1;
+
+    *entry_count = count;
+    return 0;
+}
+
 static DirStack *dir_stack_create(void)
 {
     DirStack *stack = calloc(1, sizeof(*stack));
@@ -175,17 +211,17 @@ static void dir_stack_destroy(DirStack *stack)
         return;
 
     for (int i = 0; i < stack->size; i++)
-    {
-        if (stack->entries[i].dir)
-            closedir(stack->entries[i].dir);
-    }
+        dir_entries_free(stack->entries[i].entries, stack->entries[i].entry_count);
     free(stack->entries);
     free(stack);
 }
 
-static int dir_stack_push(DirStack *stack, const char *path, const char *relative_path, DIR *dir, int level)
+static int dir_stack_push(DirStack *stack, const char *path, const char *relative_path,
+                          struct dirent **entries, int entry_count,
+                          int level, int visited_tracked)
 {
-    if (!stack || !path || !relative_path || !dir || stack->size >= stack->capacity)
+    if (!stack || !path || !relative_path || entry_count < 0 ||
+        (!entries && entry_count > 0) || stack->size >= stack->capacity)
         return -1;
 
     DirStackEntry *entry = &stack->entries[stack->size];
@@ -197,8 +233,11 @@ static int dir_stack_push(DirStack *stack, const char *path, const char *relativ
     if (n < 0 || (size_t)n >= sizeof(entry->relative_path))
         return -1;
 
-    entry->dir = dir;
+    entry->entries = entries;
+    entry->entry_count = entry_count;
+    entry->next_entry = 0;
     entry->level = level;
+    entry->visited_tracked = visited_tracked;
     stack->size++;
     return 0;
 }
@@ -213,7 +252,12 @@ static DirStackEntry *dir_stack_peek(DirStack *stack)
 static void dir_stack_pop(DirStack *stack)
 {
     if (stack && stack->size > 0)
+    {
+        DirStackEntry *entry = &stack->entries[stack->size - 1];
+        dir_entries_free(entry->entries, entry->entry_count);
+        memset(entry, 0, sizeof(*entry));
         stack->size--;
+    }
 }
 
 static int visited_set_contains(const VisitedSet *set, dev_t dev, ino_t ino)
@@ -501,17 +545,19 @@ int file_index_build(FileIndex *index,
         return -1;
     }
 
-    DIR *initial_dir = opendir(initial_full_path);
-    if (!initial_dir)
+    struct dirent **initial_entries = NULL;
+    int initial_entry_count = 0;
+    if (read_sorted_directory(initial_full_path, &initial_entries, &initial_entry_count) != 0)
     {
-        ctx->warning(ctx, "Cannot open directory: %s - %s", initial_full_path, strerror(errno));
+        int saved_errno = errno;
+        ctx->warning(ctx, "Cannot open directory: %s - %s", initial_full_path, strerror(saved_errno));
         return -1;
     }
 
     DirStack *stack = dir_stack_create();
     if (!stack)
     {
-        closedir(initial_dir);
+        dir_entries_free(initial_entries, initial_entry_count);
         ctx->error(ctx, "Failed to allocate directory stack");
         return -1;
     }
@@ -519,6 +565,7 @@ int file_index_build(FileIndex *index,
     char *scratch = malloc(FILE_INDEX_PREFIX_LIMIT);
     if (!scratch)
     {
+        dir_entries_free(initial_entries, initial_entry_count);
         dir_stack_destroy(stack);
         ctx->error(ctx, "Failed to allocate file probe buffer");
         return -1;
@@ -526,11 +573,10 @@ int file_index_build(FileIndex *index,
 
     VisitedSet visited = {0};
     if (visited_set_add(&visited, initial_st.st_dev, initial_st.st_ino) != 0 ||
-        dir_stack_push(stack, initial_full_path, "", initial_dir, 0) != 0)
+        dir_stack_push(stack, initial_full_path, "", initial_entries, initial_entry_count, 0, 1) != 0)
     {
         free(scratch);
-        if (initial_dir)
-            closedir(initial_dir);
+        dir_entries_free(initial_entries, initial_entry_count);
         dir_stack_destroy(stack);
         return -1;
     }
@@ -548,18 +594,15 @@ int file_index_build(FileIndex *index,
         }
 
         DirStackEntry *current = dir_stack_peek(stack);
-        struct dirent *dirent = readdir(current->dir);
-        if (!dirent)
+        if (current->next_entry >= current->entry_count)
         {
-            closedir(current->dir);
-            current->dir = NULL;
-            visited_set_pop(&visited);
+            if (current->visited_tracked)
+                visited_set_pop(&visited);
             dir_stack_pop(stack);
             continue;
         }
 
-        if (strcmp(dirent->d_name, ".") == 0 || strcmp(dirent->d_name, "..") == 0)
-            continue;
+        struct dirent *dirent = current->entries[current->next_entry++];
 
         if (current->level >= MAX_DIRECTORY_DEPTH)
         {
@@ -592,19 +635,27 @@ int file_index_build(FileIndex *index,
                 continue;
             }
 
-            DIR *subdir = opendir(fast_dir_path);
-            if (!subdir)
+            struct dirent **sub_entries = NULL;
+            int sub_entry_count = 0;
+            if (read_sorted_directory(fast_dir_path, &sub_entries, &sub_entry_count) != 0)
             {
-                if (errno == EACCES)
+                int saved_errno = errno;
+                if (saved_errno == EACCES)
                     ctx->warning(ctx, "Permission denied accessing directory: %s", fast_dir_path);
                 else
-                    ctx->warning(ctx, "Cannot open directory: %s - %s", fast_dir_path, strerror(errno));
+                    ctx->warning(ctx, "Cannot open directory: %s - %s", fast_dir_path, strerror(saved_errno));
+                if (saved_errno == ENOMEM)
+                {
+                    result = -1;
+                    break;
+                }
                 continue;
             }
 
-            if (dir_stack_push(stack, fast_dir_path, "", subdir, current->level + 1) != 0)
+            if (dir_stack_push(stack, fast_dir_path, "", sub_entries, sub_entry_count,
+                               current->level + 1, 0) != 0)
             {
-                closedir(subdir);
+                dir_entries_free(sub_entries, sub_entry_count);
                 ctx->warning(ctx, "Directory stack full, skipping: %s", fast_dir_path);
             }
             continue;
@@ -648,19 +699,27 @@ int file_index_build(FileIndex *index,
                 continue;
             }
 
-            DIR *subdir = opendir(entry_full_path);
-            if (!subdir)
+            struct dirent **sub_entries = NULL;
+            int sub_entry_count = 0;
+            if (read_sorted_directory(entry_full_path, &sub_entries, &sub_entry_count) != 0)
             {
-                if (errno == EACCES)
+                int saved_errno = errno;
+                if (saved_errno == EACCES)
                     ctx->warning(ctx, "Permission denied accessing directory: %s", entry_full_path);
                 else
-                    ctx->warning(ctx, "Cannot open directory: %s - %s", entry_full_path, strerror(errno));
+                    ctx->warning(ctx, "Cannot open directory: %s - %s", entry_full_path, strerror(saved_errno));
+                if (saved_errno == ENOMEM)
+                {
+                    result = -1;
+                    break;
+                }
                 continue;
             }
 
-            if (dir_stack_push(stack, entry_full_path, entry_rel_path, subdir, current->level + 1) != 0)
+            if (dir_stack_push(stack, entry_full_path, entry_rel_path, sub_entries, sub_entry_count,
+                               current->level + 1, 0) != 0)
             {
-                closedir(subdir);
+                dir_entries_free(sub_entries, sub_entry_count);
                 ctx->warning(ctx, "Directory stack full, skipping: %s", entry_full_path);
             }
             continue;
@@ -784,21 +843,29 @@ int file_index_build(FileIndex *index,
                 continue;
             }
 
-            DIR *subdir = opendir(subdir_path);
-            if (!subdir)
+            struct dirent **sub_entries = NULL;
+            int sub_entry_count = 0;
+            if (read_sorted_directory(subdir_path, &sub_entries, &sub_entry_count) != 0)
             {
-                if (errno == EACCES)
+                int saved_errno = errno;
+                if (saved_errno == EACCES)
                     ctx->warning(ctx, "Permission denied accessing directory: %s", subdir_path);
                 else
-                    ctx->warning(ctx, "Cannot open directory: %s - %s", subdir_path, strerror(errno));
+                    ctx->warning(ctx, "Cannot open directory: %s - %s", subdir_path, strerror(saved_errno));
                 visited_set_pop(&visited);
                 free(resolved_path);
+                if (saved_errno == ENOMEM)
+                {
+                    result = -1;
+                    break;
+                }
                 continue;
             }
 
-            if (dir_stack_push(stack, subdir_path, entry_rel_path, subdir, current->level + 1) != 0)
+            if (dir_stack_push(stack, subdir_path, entry_rel_path, sub_entries, sub_entry_count,
+                               current->level + 1, 1) != 0)
             {
-                closedir(subdir);
+                dir_entries_free(sub_entries, sub_entry_count);
                 visited_set_pop(&visited);
                 ctx->warning(ctx, "Directory stack full, skipping: %s", subdir_path);
             }
