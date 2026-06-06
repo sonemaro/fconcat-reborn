@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <fnmatch.h>
 #include <limits.h>
+#include <stdint.h>
 
 #ifndef PATH_SEP
 #ifdef _WIN32
@@ -14,6 +15,20 @@
 #define PATH_SEP '/'
 #endif
 #endif
+
+static int filter_engine_rules_are_valid(const FilterEngine *engine)
+{
+    if (!engine)
+        return 0;
+    if (engine->rule_count < 0 || engine->rule_capacity < 0 ||
+        engine->rule_count > engine->rule_capacity)
+        return 0;
+    if (engine->rule_capacity > 0 && !engine->rules)
+        return 0;
+    if ((size_t)engine->rule_capacity > SIZE_MAX / sizeof(FilterRule))
+        return 0;
+    return 1;
+}
 
 char *get_absolute_path_util(const char *path)
 {
@@ -152,7 +167,8 @@ void filter_engine_destroy(FilterEngine *engine)
     pthread_mutex_lock(&engine->mutex);
 
     // Cleanup rule contexts
-    for (int i = 0; i < engine->rule_count; i++)
+    int rule_count = filter_engine_rules_are_valid(engine) ? engine->rule_count : 0;
+    for (int i = 0; i < rule_count; i++)
     {
         FilterRule *rule = &engine->rules[i];
         if (rule->context && rule->destroy_context)
@@ -329,16 +345,24 @@ int filter_engine_add_rule_internal(FilterEngine *engine, const FilterRule *rule
 {
     if (!engine || !rule)
         return -1;
+    if (!filter_engine_rules_are_valid(engine) || engine->rule_capacity == 0)
+        return -1;
 
     if (engine->rule_count >= engine->rule_capacity)
     {
         // Resize rules array
+        if (engine->rule_capacity > INT_MAX / 2)
+            return -1;
         int new_capacity = engine->rule_capacity * 2;
+        if ((size_t)new_capacity > SIZE_MAX / sizeof(FilterRule))
+            return -1;
         FilterRule *new_rules = realloc(engine->rules, new_capacity * sizeof(FilterRule));
         if (!new_rules)
         {
             return -1;
         }
+        memset(new_rules + engine->rule_capacity, 0,
+               (size_t)(new_capacity - engine->rule_capacity) * sizeof(FilterRule));
         engine->rules = new_rules;
         engine->rule_capacity = new_capacity;
     }
@@ -367,6 +391,8 @@ int filter_engine_should_include_path(FilterEngine *engine, FconcatContext *ctx,
 {
     (void)ctx;
     if (!engine || !path)
+        return 1;
+    if (!filter_engine_rules_are_valid(engine))
         return 1;
 
     // Check include rules first - if any include patterns are specified,

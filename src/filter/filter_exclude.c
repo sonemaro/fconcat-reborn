@@ -4,6 +4,7 @@
 #include <string.h>
 #include <fnmatch.h>
 #include <stdio.h>
+#include <stdint.h>
 
 // Check if path matches any exclude pattern
 int exclude_match_path(const char *path, FileInfo *info, void *context)
@@ -55,7 +56,11 @@ int exclude_match_path(const char *path, FileInfo *info, void *context)
 // Create exclude context and add patterns
 static ExcludeContext *create_exclude_context(const ResolvedConfig *config)
 {
-    if (!config || config->exclude_count == 0)
+    if (!config || config->exclude_count <= 0)
+        return NULL;
+    if (config->exclude_count > MAX_EXCLUDES || !config->exclude_patterns)
+        return NULL;
+    if ((size_t)config->exclude_count > SIZE_MAX / sizeof(char *))
         return NULL;
 
     ExcludeContext *ctx = malloc(sizeof(ExcludeContext));
@@ -133,8 +138,13 @@ int filter_exclude_patterns_init_internal(FilterEngine *engine, const ResolvedCo
     if (!engine || !config)
         return -1;
 
+    if (config->exclude_count < 0)
+        return -1;
+
     if (config->exclude_count == 0)
         return 0; // No patterns to exclude
+    if (config->exclude_count > MAX_EXCLUDES || !config->exclude_patterns)
+        return -1;
 
     // Create exclude context
     ExcludeContext *ctx = create_exclude_context(config);

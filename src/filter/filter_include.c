@@ -4,6 +4,7 @@
 #include <string.h>
 #include <fnmatch.h>
 #include <stdio.h>
+#include <stdint.h>
 
 // Check if path matches any include pattern
 int include_match_path(const char *path, FileInfo *info, void *context)
@@ -68,7 +69,11 @@ int include_match_path(const char *path, FileInfo *info, void *context)
 // Create include context and add patterns
 static IncludeContext *create_include_context(const ResolvedConfig *config)
 {
-    if (!config || config->include_count == 0)
+    if (!config || config->include_count <= 0)
+        return NULL;
+    if (config->include_count > MAX_INCLUDES || !config->include_patterns)
+        return NULL;
+    if ((size_t)config->include_count > SIZE_MAX / sizeof(char *))
         return NULL;
 
     IncludeContext *ctx = malloc(sizeof(IncludeContext));
@@ -142,10 +147,15 @@ int filter_include_patterns_init_internal(FilterEngine *engine, const ResolvedCo
     if (!engine || !config)
         return -1;
 
+    if (config->include_count < 0)
+        return -1;
+
     if (config->include_count == 0)
     {
         return 0; // No patterns to include
     }
+    if (config->include_count > MAX_INCLUDES || !config->include_patterns)
+        return -1;
 
     // Create include context
     IncludeContext *ctx = create_include_context(config);

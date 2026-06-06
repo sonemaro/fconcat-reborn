@@ -17,6 +17,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <unistd.h>
 #include <sys/stat.h>
 
@@ -324,7 +325,7 @@ TEST(filter_engine_add_multiple_rules)
     FilterEngine *engine = filter_engine_create();
     ASSERT_NOT_NULL(engine);
     
-    for (int i = 0; i < 50; i++) {
+    for (int i = 0; i < 125; i++) {
         FilterRule rule = {0};
         rule.type = FILTER_TYPE_EXCLUDE;
         rule.priority = i;
@@ -333,8 +334,87 @@ TEST(filter_engine_add_multiple_rules)
         ASSERT_EQ(0, result);
     }
     
-    ASSERT_EQ(50, engine->rule_count);
+    ASSERT_EQ(125, engine->rule_count);
+    ASSERT_TRUE(engine->rule_capacity >= 125);
     
+    filter_engine_destroy(engine);
+    return 0;
+}
+
+TEST(filter_engine_add_rule_rejects_corrupt_state)
+{
+    FilterEngine *engine = filter_engine_create();
+    ASSERT_NOT_NULL(engine);
+
+    FilterRule rule = {0};
+    rule.type = FILTER_TYPE_EXCLUDE;
+    int saved_capacity = engine->rule_capacity;
+    FilterRule *saved_rules = engine->rules;
+
+    engine->rule_count = -1;
+    ASSERT_EQ(-1, filter_engine_add_rule_internal(engine, &rule));
+    engine->rule_count = 0;
+
+    engine->rule_capacity = 0;
+    ASSERT_EQ(-1, filter_engine_add_rule_internal(engine, &rule));
+    engine->rule_capacity = saved_capacity;
+
+    engine->rule_count = saved_capacity + 1;
+    ASSERT_EQ(-1, filter_engine_add_rule_internal(engine, &rule));
+    engine->rule_count = 0;
+
+    engine->rules = NULL;
+    ASSERT_EQ(-1, filter_engine_add_rule_internal(engine, &rule));
+    engine->rules = saved_rules;
+
+    engine->rule_count = INT_MAX;
+    engine->rule_capacity = INT_MAX;
+    ASSERT_EQ(-1, filter_engine_add_rule_internal(engine, &rule));
+    engine->rule_count = 0;
+    engine->rule_capacity = saved_capacity;
+
+    filter_engine_destroy(engine);
+    return 0;
+}
+
+TEST(filter_pattern_initializers_reject_invalid_counts)
+{
+    FilterEngine *engine = filter_engine_create();
+    ASSERT_NOT_NULL(engine);
+
+    ResolvedConfig config;
+    memset(&config, 0, sizeof(config));
+    char *patterns[] = {"*.c"};
+
+    config.include_count = -1;
+    ASSERT_EQ(-1, filter_include_patterns_init_internal(engine, &config));
+    ASSERT_EQ(0, engine->rule_count);
+
+    config.include_count = 1;
+    config.include_patterns = NULL;
+    ASSERT_EQ(-1, filter_include_patterns_init_internal(engine, &config));
+    ASSERT_EQ(0, engine->rule_count);
+
+    config.include_count = MAX_INCLUDES + 1;
+    config.include_patterns = patterns;
+    ASSERT_EQ(-1, filter_include_patterns_init_internal(engine, &config));
+    ASSERT_EQ(0, engine->rule_count);
+
+    memset(&config, 0, sizeof(config));
+    config.exclude_count = -1;
+    ASSERT_EQ(-1, filter_exclude_patterns_init_internal(engine, &config));
+    ASSERT_EQ(0, engine->rule_count);
+
+    config.exclude_count = 1;
+    config.exclude_patterns = NULL;
+    ASSERT_EQ(-1, filter_exclude_patterns_init_internal(engine, &config));
+    ASSERT_EQ(0, engine->rule_count);
+
+    config.exclude_count = MAX_EXCLUDES + 1;
+    config.exclude_patterns = patterns;
+    ASSERT_EQ(-1, filter_exclude_patterns_init_internal(engine, &config));
+    ASSERT_EQ(0, engine->rule_count);
+
     filter_engine_destroy(engine);
     return 0;
 }
@@ -384,6 +464,8 @@ int test_filter_main(void)
     TEST_SUITE_BEGIN("Filter Rules");
     RUN_TEST(filter_engine_add_rule);
     RUN_TEST(filter_engine_add_multiple_rules);
+    RUN_TEST(filter_engine_add_rule_rejects_corrupt_state);
+    RUN_TEST(filter_pattern_initializers_reject_invalid_counts);
     
     TEST_SUMMARY();
     
