@@ -329,6 +329,8 @@ static char *url_decode(const char *value, size_t len)
 {
     if (!value)
         return NULL;
+    if (len == SIZE_MAX)
+        return NULL;
 
     char *out = malloc(len + 1);
     if (!out)
@@ -351,7 +353,13 @@ static char *url_decode(const char *value, size_t len)
                 free(out);
                 return NULL;
             }
-            out[j++] = (char)((hi << 4) | lo);
+            char decoded = (char)((hi << 4) | lo);
+            if (decoded == '\0')
+            {
+                free(out);
+                return NULL;
+            }
+            out[j++] = decoded;
             i += 2;
         }
         else if (value[i] == '+')

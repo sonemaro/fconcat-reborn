@@ -1294,6 +1294,10 @@ TEST(integ_server_malformed_query_cleanup)
     int malformed_is_bad_request = output_contains(response, "HTTP/1.1 400 Bad Request");
     int truncated_result = http_get_local(port, "/concat?root=%", response, sizeof(response));
     int truncated_is_bad_request = output_contains(response, "HTTP/1.1 400 Bad Request");
+    char nul_target[TEST_PATH_MAX + 128];
+    snprintf(nul_target, sizeof(nul_target), "/concat?root=%s%%00suffix", root);
+    int nul_result = http_get_local(port, nul_target, response, sizeof(response));
+    int nul_is_bad_request = output_contains(response, "HTTP/1.1 400 Bad Request");
 
     int health_result = http_get_local(port, "/healthz", response, sizeof(response));
     int health_is_ok = output_contains(response, "HTTP/1.1 200 OK");
@@ -1303,6 +1307,8 @@ TEST(integ_server_malformed_query_cleanup)
     ASSERT_TRUE(malformed_is_bad_request);
     ASSERT_EQ(0, truncated_result);
     ASSERT_TRUE(truncated_is_bad_request);
+    ASSERT_EQ(0, nul_result);
+    ASSERT_TRUE(nul_is_bad_request);
     ASSERT_EQ(0, health_result);
     ASSERT_EQ(0, server_exit);
     ASSERT_TRUE(health_is_ok);
