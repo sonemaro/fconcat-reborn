@@ -14,6 +14,7 @@
 #include "test_framework.h"
 #include "../../src/core/memory.h"
 #include "../../src/core/types.h"
+#include <limits.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -385,6 +386,71 @@ TEST(buffer_pool_fallback_to_malloc_when_exhausted)
     return 0;
 }
 
+TEST(buffer_pool_rejects_corrupt_metadata_for_get)
+{
+    BufferPool *pool = buffer_pool_create();
+    ASSERT_NOT_NULL(pool);
+
+    int saved_pool_size = pool->pool_size;
+    pool->pool_size = saved_pool_size + 1;
+
+    char *fallback = buffer_pool_get(pool, 1000);
+    ASSERT_NOT_NULL(fallback);
+
+    int matches_pool_buffer = 0;
+    for (int i = 0; i < saved_pool_size; i++)
+    {
+        if (fallback == pool->buffers[i])
+        {
+            matches_pool_buffer = 1;
+            break;
+        }
+    }
+
+    buffer_pool_release(pool, fallback);
+    pool->pool_size = saved_pool_size;
+    buffer_pool_destroy(pool);
+
+    ASSERT_FALSE(matches_pool_buffer);
+    return 0;
+}
+
+TEST(buffer_pool_release_handles_corrupt_pool_size)
+{
+    BufferPool *pool = buffer_pool_create();
+    ASSERT_NOT_NULL(pool);
+
+    int saved_pool_size = pool->pool_size;
+    char *pooled = buffer_pool_get(pool, 1000);
+    ASSERT_NOT_NULL(pooled);
+
+    pool->pool_size = -1;
+    buffer_pool_release(pool, pooled);
+    pool->pool_size = saved_pool_size;
+
+    char *again = buffer_pool_get(pool, 1000);
+    int reused = again == pooled;
+    buffer_pool_release(pool, again);
+    buffer_pool_destroy(pool);
+
+    ASSERT_TRUE(reused);
+    return 0;
+}
+
+TEST(buffer_pool_destroy_handles_corrupt_pool_size)
+{
+    BufferPool *pool = buffer_pool_create();
+    ASSERT_NOT_NULL(pool);
+    pool->pool_size = INT_MAX;
+    buffer_pool_destroy(pool);
+
+    pool = buffer_pool_create();
+    ASSERT_NOT_NULL(pool);
+    pool->pool_size = -1;
+    buffer_pool_destroy(pool);
+    return 0;
+}
+
 TEST(memory_buffer_counters_ignore_null_release)
 {
     MemoryManager *mgr = memory_manager_create();
@@ -586,6 +652,9 @@ int test_memory_main(void)
     RUN_TEST(buffer_pool_get_returns_buffer);
     RUN_TEST(buffer_pool_reuses_released_buffer);
     RUN_TEST(buffer_pool_fallback_to_malloc_when_exhausted);
+    RUN_TEST(buffer_pool_rejects_corrupt_metadata_for_get);
+    RUN_TEST(buffer_pool_release_handles_corrupt_pool_size);
+    RUN_TEST(buffer_pool_destroy_handles_corrupt_pool_size);
     RUN_TEST(memory_buffer_counters_ignore_null_release);
     
     TEST_SUITE_BEGIN("StreamBuffer");

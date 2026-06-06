@@ -119,6 +119,25 @@ static inline int verify_tail_canary(AllocationHeader *header) {
 
 #define TOTAL_POOL_SIZE (SMALL_BUFFER_COUNT + MEDIUM_BUFFER_COUNT + LARGE_BUFFER_COUNT)
 
+static int buffer_pool_metadata_is_valid(const BufferPool *pool)
+{
+    return pool &&
+           pool->buffers &&
+           pool->buffer_sizes &&
+           pool->in_use &&
+           pool->pool_size == TOTAL_POOL_SIZE &&
+           pool->small_buffer_count == SMALL_BUFFER_COUNT &&
+           pool->medium_buffer_count == MEDIUM_BUFFER_COUNT &&
+           pool->large_buffer_count == LARGE_BUFFER_COUNT;
+}
+
+static int buffer_pool_storage_count(const BufferPool *pool)
+{
+    if (!pool || !pool->buffers)
+        return 0;
+    return TOTAL_POOL_SIZE;
+}
+
 BufferPool *buffer_pool_create(void)
 {
     BufferPool *pool = calloc(1, sizeof(BufferPool));
@@ -234,7 +253,8 @@ void buffer_pool_destroy(BufferPool *pool)
     pthread_mutex_lock(&pool->mutex);
 
     // Free all buffers
-    for (int i = 0; i < pool->pool_size; i++)
+    int storage_count = buffer_pool_storage_count(pool);
+    for (int i = 0; i < storage_count; i++)
     {
         free(pool->buffers[i]);
     }
@@ -250,7 +270,7 @@ void buffer_pool_destroy(BufferPool *pool)
 
 char *buffer_pool_get(BufferPool *pool, size_t size)
 {
-    if (!pool)
+    if (!buffer_pool_metadata_is_valid(pool))
         return malloc(size);
 
     pthread_mutex_lock(&pool->mutex);
@@ -296,11 +316,13 @@ void buffer_pool_release(BufferPool *pool, char *buffer)
     pthread_mutex_lock(&pool->mutex);
 
     // Find buffer in pool
-    for (int i = 0; i < pool->pool_size; i++)
+    int storage_count = buffer_pool_storage_count(pool);
+    for (int i = 0; i < storage_count; i++)
     {
         if (pool->buffers[i] == buffer)
         {
-            pool->in_use[i] = false;
+            if (pool->in_use)
+                pool->in_use[i] = false;
             pthread_mutex_unlock(&pool->mutex);
             return;
         }
