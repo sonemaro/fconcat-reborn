@@ -574,6 +574,8 @@ StreamBuffer *stream_buffer_create(MemoryManager *manager, size_t initial_size)
 {
     if (initial_size == 0)
         initial_size = 1;
+    if (initial_size > MAX_STREAM_BUFFER_SIZE)
+        return NULL;
 
     StreamBuffer *buffer = memory_alloc(manager, sizeof(StreamBuffer));
     if (!buffer)
@@ -594,9 +596,18 @@ StreamBuffer *stream_buffer_create(MemoryManager *manager, size_t initial_size)
     return buffer;
 }
 
+static int stream_buffer_state_is_valid(const StreamBuffer *buffer)
+{
+    return buffer &&
+           buffer->data &&
+           buffer->capacity > 0 &&
+           buffer->capacity <= MAX_STREAM_BUFFER_SIZE &&
+           buffer->size <= buffer->capacity;
+}
+
 int stream_buffer_write(StreamBuffer *buffer, const char *data, size_t size)
 {
-    if (!buffer || !data || size == 0)
+    if (!stream_buffer_state_is_valid(buffer) || !data || size == 0)
         return -1;
 
     // Check if addition would overflow
@@ -643,7 +654,7 @@ int stream_buffer_write(StreamBuffer *buffer, const char *data, size_t size)
 
 int stream_buffer_flush(StreamBuffer *buffer)
 {
-    if (!buffer)
+    if (!stream_buffer_state_is_valid(buffer))
         return -1;
 
     // Write to stdout for now

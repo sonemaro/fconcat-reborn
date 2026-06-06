@@ -555,6 +555,21 @@ TEST(stream_buffer_zero_initial_size_can_grow)
     return 0;
 }
 
+TEST(stream_buffer_rejects_oversized_initial_capacity)
+{
+    MemoryManager *mgr = memory_manager_create();
+    ASSERT_NOT_NULL(mgr);
+
+    StreamBuffer *buf = stream_buffer_create(mgr, MAX_STREAM_BUFFER_SIZE + 1);
+    ASSERT_NULL(buf);
+
+    MemoryStats stats = memory_get_stats(mgr);
+    ASSERT_EQ(0, stats.allocation_count);
+
+    memory_manager_destroy(mgr);
+    return 0;
+}
+
 TEST(stream_buffer_rejects_null_inputs)
 {
     MemoryManager *mgr = memory_manager_create();
@@ -572,6 +587,42 @@ TEST(stream_buffer_rejects_null_inputs)
     // Zero size
     ASSERT_EQ(-1, stream_buffer_write(buf, "test", 0));
     
+    stream_buffer_destroy(buf);
+    memory_manager_destroy(mgr);
+    return 0;
+}
+
+TEST(stream_buffer_rejects_corrupt_state)
+{
+    MemoryManager *mgr = memory_manager_create();
+    ASSERT_NOT_NULL(mgr);
+
+    StreamBuffer *buf = stream_buffer_create(mgr, 16);
+    ASSERT_NOT_NULL(buf);
+
+    char *saved_data = buf->data;
+    size_t saved_capacity = buf->capacity;
+
+    buf->capacity = 0;
+    ASSERT_EQ(-1, stream_buffer_write(buf, "x", 1));
+    ASSERT_EQ(-1, stream_buffer_flush(buf));
+
+    buf->capacity = saved_capacity;
+    buf->data = NULL;
+    ASSERT_EQ(-1, stream_buffer_write(buf, "x", 1));
+    ASSERT_EQ(-1, stream_buffer_flush(buf));
+
+    buf->data = saved_data;
+    buf->size = saved_capacity + 1;
+    ASSERT_EQ(-1, stream_buffer_write(buf, "x", 1));
+    ASSERT_EQ(-1, stream_buffer_flush(buf));
+
+    buf->size = 0;
+    buf->capacity = MAX_STREAM_BUFFER_SIZE + 1;
+    ASSERT_EQ(-1, stream_buffer_write(buf, "x", 1));
+    ASSERT_EQ(-1, stream_buffer_flush(buf));
+
+    buf->capacity = saved_capacity;
     stream_buffer_destroy(buf);
     memory_manager_destroy(mgr);
     return 0;
@@ -662,7 +713,9 @@ int test_memory_main(void)
     RUN_TEST(stream_buffer_write_appends_data);
     RUN_TEST(stream_buffer_grows_automatically);
     RUN_TEST(stream_buffer_zero_initial_size_can_grow);
+    RUN_TEST(stream_buffer_rejects_oversized_initial_capacity);
     RUN_TEST(stream_buffer_rejects_null_inputs);
+    RUN_TEST(stream_buffer_rejects_corrupt_state);
     RUN_TEST(stream_buffer_destroy_null_is_safe);
     
     TEST_SUITE_BEGIN("Memory Tracking Toggle");
