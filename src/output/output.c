@@ -359,9 +359,14 @@ int text_begin_structure(FconcatContext *ctx)
     return ctx->write_output(ctx, "Directory Structure:\n==================\n\n", 0);
 }
 
+static int text_level_is_valid(int level)
+{
+    return level >= 0 && level <= MAX_DIRECTORY_DEPTH;
+}
+
 int text_write_directory(FconcatContext *ctx, const char *path, int level)
 {
-    if (!ctx || !ctx->write_output || !path || level < 0)
+    if (!ctx || !ctx->write_output || !path || !text_level_is_valid(level))
         return -1;
 
     size_t indent = (size_t)level * 2;
@@ -389,7 +394,8 @@ int text_write_directory(FconcatContext *ctx, const char *path, int level)
 
 int text_write_file_entry(FconcatContext *ctx, const char *path, FileInfo *info)
 {
-    if (!ctx || !ctx->write_output || !ctx->get_config_bool || !path || ctx->current_directory_level < 0)
+    if (!ctx || !ctx->write_output || !ctx->get_config_bool || !path ||
+        !text_level_is_valid(ctx->current_directory_level))
         return -1;
 
     size_t indent = (size_t)ctx->current_directory_level * 2;
@@ -417,7 +423,7 @@ int text_write_file_entry(FconcatContext *ctx, const char *path, FileInfo *info)
     size_t size_len = 0;
     if (ctx->get_config_bool(ctx, "show_size") && info)
     {
-        size_t kb = (info->size + 1023) / 1024;
+        size_t kb = info->size / 1024 + (info->size % 1024 != 0 ? 1 : 0);
         if (kb == 0 && info->size > 0)
             kb = 1;
         int n = snprintf(size_buf, sizeof(size_buf), "[%zu KB] ", kb);

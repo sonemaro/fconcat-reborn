@@ -7,6 +7,7 @@
 #include "../../src/core/context.h"
 #include "../../src/output/output.h"
 #include <stdarg.h>
+#include <stdint.h>
 #include <string.h>
 
 typedef struct
@@ -80,6 +81,13 @@ static bool test_context_get_bool_false(FconcatContext *ctx, const char *key)
     (void)ctx;
     (void)key;
     return false;
+}
+
+static bool test_context_get_bool_true(FconcatContext *ctx, const char *key)
+{
+    (void)ctx;
+    (void)key;
+    return true;
 }
 
 static void test_context_init(FconcatContext *ctx, InternalContextState *internal, OutputSink *sink)
@@ -180,6 +188,28 @@ TEST(text_output_rejects_invalid_levels)
     ASSERT_EQ(-1, text_write_directory(&ctx, "bad", -1));
     ctx.current_directory_level = -1;
     ASSERT_EQ(-1, text_write_file_entry(&ctx, "bad", NULL));
+    ASSERT_EQ(-1, text_write_directory(&ctx, "bad", MAX_DIRECTORY_DEPTH + 1));
+    ctx.current_directory_level = MAX_DIRECTORY_DEPTH + 1;
+    ASSERT_EQ(-1, text_write_file_entry(&ctx, "bad", NULL));
+    return 0;
+}
+
+TEST(text_output_formats_extreme_file_size_safely)
+{
+    TestOutputSink sink;
+    test_sink_init(&sink);
+    InternalContextState internal;
+    FconcatContext ctx;
+    test_context_init(&ctx, &internal, &sink.sink);
+    ctx.get_config_bool = test_context_get_bool_true;
+
+    FileInfo info;
+    memset(&info, 0, sizeof(info));
+    info.size = SIZE_MAX;
+
+    ASSERT_EQ(0, text_write_file_entry(&ctx, "huge.bin", &info));
+    ASSERT_TRUE(strstr(sink.data, "FILE [") != NULL);
+    ASSERT_TRUE(strstr(sink.data, "huge.bin") != NULL);
     return 0;
 }
 
@@ -219,6 +249,7 @@ int test_output_main(void)
     RUN_TEST(text_output_null_guards);
     RUN_TEST(text_output_rejects_missing_callbacks);
     RUN_TEST(text_output_rejects_invalid_levels);
+    RUN_TEST(text_output_formats_extreme_file_size_safely);
     RUN_TEST(text_output_writes_expected_structure);
 
     TEST_SUMMARY();
