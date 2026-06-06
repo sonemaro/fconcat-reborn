@@ -407,7 +407,11 @@ static int build_relative_path(char *rel_path, size_t max_len, const char *curre
 
 static size_t stat_size_to_size_t(off_t size)
 {
-    return size > 0 ? (size_t)size : 0;
+    if (size <= 0)
+        return 0;
+    if ((uintmax_t)size > (uintmax_t)SIZE_MAX)
+        return SIZE_MAX;
+    return (size_t)size;
 }
 
 static FileIndexEntry *file_index_append(FileIndex *index,
@@ -458,13 +462,13 @@ static void account_null_output_file(FconcatContext *ctx, const FileInfo *info)
     if (!stats)
         return;
 
-    stats->processed_files++;
-    stats->total_files++;
-    stats->total_bytes += info->size;
+    fconcat_size_increment_saturated(&stats->processed_files);
+    fconcat_size_increment_saturated(&stats->total_files);
+    fconcat_size_add_saturated(&stats->total_bytes, info->size);
     if (info->size > MAX_FILE_SIZE)
-        stats->skipped_files++;
+        fconcat_size_increment_saturated(&stats->skipped_files);
     else
-        stats->processed_bytes += info->size;
+        fconcat_size_add_saturated(&stats->processed_bytes, info->size);
 }
 
 static int buffer_has_nul(const char *buffer, size_t size)
@@ -705,8 +709,8 @@ int file_index_build(FileIndex *index,
                 ProcessingStats *stats = (ProcessingStats *)ctx->stats;
                 if (stats)
                 {
-                    stats->processed_files++;
-                    stats->total_files++;
+                    fconcat_size_increment_saturated(&stats->processed_files);
+                    fconcat_size_increment_saturated(&stats->total_files);
                 }
             }
             continue;

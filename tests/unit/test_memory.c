@@ -192,6 +192,41 @@ TEST(memory_multiple_allocations_track_correctly)
     return 0;
 }
 
+TEST(memory_stats_saturate_and_floor)
+{
+    MemoryManager *mgr = memory_manager_create();
+    ASSERT_NOT_NULL(mgr);
+
+    mgr->stats.total_allocated = SIZE_MAX - 1;
+    mgr->stats.current_usage = SIZE_MAX - 1;
+    mgr->stats.peak_usage = 0;
+    mgr->stats.allocation_count = SIZE_MAX;
+
+    void *ptr = memory_alloc(mgr, 16);
+    ASSERT_NOT_NULL(ptr);
+
+    MemoryStats stats = memory_get_stats(mgr);
+    int alloc_stats_ok = stats.total_allocated == SIZE_MAX &&
+                         stats.current_usage == SIZE_MAX &&
+                         stats.peak_usage == SIZE_MAX &&
+                         stats.allocation_count == SIZE_MAX;
+
+    mgr->stats.current_usage = 4;
+    mgr->stats.total_freed = SIZE_MAX - 1;
+    mgr->stats.free_count = SIZE_MAX;
+    memory_free(mgr, ptr);
+
+    stats = memory_get_stats(mgr);
+    int free_stats_ok = stats.current_usage == 0 &&
+                        stats.total_freed == SIZE_MAX &&
+                        stats.free_count == SIZE_MAX;
+
+    memory_manager_destroy(mgr);
+    ASSERT_TRUE(alloc_stats_ok);
+    ASSERT_TRUE(free_stats_ok);
+    return 0;
+}
+
 /* =========================================================================
  * Reallocation Tests
  * ========================================================================= */
@@ -347,6 +382,28 @@ TEST(buffer_pool_fallback_to_malloc_when_exhausted)
     }
     
     buffer_pool_destroy(pool);
+    return 0;
+}
+
+TEST(memory_buffer_counters_ignore_null_release)
+{
+    MemoryManager *mgr = memory_manager_create();
+    ASSERT_NOT_NULL(mgr);
+
+    char *buffer = memory_get_buffer(mgr, 32);
+    ASSERT_NOT_NULL(buffer);
+    MemoryStats stats = memory_get_stats(mgr);
+    ASSERT_TRUE(stats.allocation_count == 1);
+
+    memory_release_buffer(mgr, buffer);
+    stats = memory_get_stats(mgr);
+    ASSERT_TRUE(stats.free_count == 1);
+
+    memory_release_buffer(mgr, NULL);
+    stats = memory_get_stats(mgr);
+    ASSERT_TRUE(stats.free_count == 1);
+
+    memory_manager_destroy(mgr);
     return 0;
 }
 
@@ -515,6 +572,7 @@ int test_memory_main(void)
     RUN_TEST(memory_alloc_null_manager_still_allocates);
     RUN_TEST(memory_alloc_rejects_overflow_size);
     RUN_TEST(memory_multiple_allocations_track_correctly);
+    RUN_TEST(memory_stats_saturate_and_floor);
     
     TEST_SUITE_BEGIN("Reallocation");
     RUN_TEST(memory_realloc_grows_allocation);
@@ -528,6 +586,7 @@ int test_memory_main(void)
     RUN_TEST(buffer_pool_get_returns_buffer);
     RUN_TEST(buffer_pool_reuses_released_buffer);
     RUN_TEST(buffer_pool_fallback_to_malloc_when_exhausted);
+    RUN_TEST(memory_buffer_counters_ignore_null_release);
     
     TEST_SUITE_BEGIN("StreamBuffer");
     RUN_TEST(stream_buffer_create_returns_valid_pointer);

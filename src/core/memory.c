@@ -373,9 +373,9 @@ void *memory_alloc(MemoryManager *manager, size_t size)
     if (manager && manager->track_allocations)
     {
         pthread_mutex_lock(&manager->mutex);
-        manager->stats.total_allocated += size;
-        manager->stats.current_usage += size;
-        manager->stats.allocation_count++;
+        fconcat_size_add_saturated(&manager->stats.total_allocated, size);
+        fconcat_size_add_saturated(&manager->stats.current_usage, size);
+        fconcat_size_increment_saturated(&manager->stats.allocation_count);
         if (manager->stats.current_usage > manager->stats.peak_usage)
         {
             manager->stats.peak_usage = manager->stats.current_usage;
@@ -433,10 +433,10 @@ void *memory_realloc(MemoryManager *manager, void *ptr, size_t size)
     {
         pthread_mutex_lock(&manager->mutex);
         // Correct tracking: subtract old size, add new size
-        manager->stats.current_usage -= old_size;
-        manager->stats.current_usage += size;
-        manager->stats.total_allocated += size;  // Track total ever allocated
-        manager->stats.allocation_count++;
+        fconcat_size_subtract_saturated(&manager->stats.current_usage, old_size);
+        fconcat_size_add_saturated(&manager->stats.current_usage, size);
+        fconcat_size_add_saturated(&manager->stats.total_allocated, size);  // Track total ever allocated
+        fconcat_size_increment_saturated(&manager->stats.allocation_count);
         if (manager->stats.current_usage > manager->stats.peak_usage)
         {
             manager->stats.peak_usage = manager->stats.current_usage;
@@ -476,9 +476,9 @@ void memory_free(MemoryManager *manager, void *ptr)
     {
         pthread_mutex_lock(&manager->mutex);
         // Correct tracking: decrement usage by actual size
-        manager->stats.current_usage -= size;
-        manager->stats.total_freed += size;
-        manager->stats.free_count++;
+        fconcat_size_subtract_saturated(&manager->stats.current_usage, size);
+        fconcat_size_add_saturated(&manager->stats.total_freed, size);
+        fconcat_size_increment_saturated(&manager->stats.free_count);
         pthread_mutex_unlock(&manager->mutex);
     }
 
@@ -519,10 +519,10 @@ char *memory_get_buffer(MemoryManager *manager, size_t size)
 
     char *buffer = buffer_pool_get(manager->buffer_pool, size);
 
-    if (manager->track_allocations)
+    if (buffer && manager->track_allocations)
     {
         pthread_mutex_lock(&manager->mutex);
-        manager->stats.allocation_count++;
+        fconcat_size_increment_saturated(&manager->stats.allocation_count);
         pthread_mutex_unlock(&manager->mutex);
     }
 
@@ -539,10 +539,10 @@ void memory_release_buffer(MemoryManager *manager, char *buffer)
 
     buffer_pool_release(manager->buffer_pool, buffer);
 
-    if (manager->track_allocations)
+    if (buffer && manager->track_allocations)
     {
         pthread_mutex_lock(&manager->mutex);
-        manager->stats.free_count++;
+        fconcat_size_increment_saturated(&manager->stats.free_count);
         pthread_mutex_unlock(&manager->mutex);
     }
 }

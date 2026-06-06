@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <errno.h>
+#include <stdint.h>
 
 #define INDEX_STREAM_BUFFER_SIZE (64U * 1024U)
 #define INDEX_DIRECT_COPY_CHUNK_SIZE (8U * 1024U * 1024U)
@@ -33,6 +34,15 @@ static int direct_copy_enabled(void)
 {
     const char *env = getenv("FCONCAT_DIRECT_COPY");
     return env && strcmp(env, "1") == 0;
+}
+
+static size_t stat_size_to_size_t(off_t size)
+{
+    if (size <= 0)
+        return 0;
+    if ((uintmax_t)size > (uintmax_t)SIZE_MAX)
+        return SIZE_MAX;
+    return (size_t)size;
 }
 
 static int stream_indexed_file_from(FconcatContext *ctx, const FileIndexEntry *entry, size_t offset,
@@ -55,7 +65,7 @@ static int stream_indexed_file_from(FconcatContext *ctx, const FileIndexEntry *e
         else
             ctx->warning(ctx, "Cannot open file: %s - %s", entry->full_path, strerror(errno));
         if (stats)
-            stats->skipped_files++;
+            fconcat_size_increment_saturated(&stats->skipped_files);
         return 0;
     }
 
@@ -231,9 +241,9 @@ static int emit_index_content(FconcatContext *ctx, const ResolvedConfig *config,
 
         if (stats)
         {
-            stats->processed_files++;
-            stats->total_files++;
-            stats->total_bytes += entry->info.size;
+            fconcat_size_increment_saturated(&stats->processed_files);
+            fconcat_size_increment_saturated(&stats->total_files);
+            fconcat_size_add_saturated(&stats->total_bytes, entry->info.size);
         }
 
         if (text_write_file_header(ctx, entry->relative_path) != 0)
@@ -248,7 +258,7 @@ static int emit_index_content(FconcatContext *ctx, const ResolvedConfig *config,
                          (unsigned long long)(MAX_FILE_SIZE / (1024 * 1024)),
                          entry->relative_path, entry->info.size);
             if (stats)
-                stats->skipped_files++;
+                fconcat_size_increment_saturated(&stats->skipped_files);
             if (text_write_file_footer(ctx) != 0)
             {
                 ctx->current_file_info = NULL;
@@ -278,7 +288,7 @@ static int emit_index_content(FconcatContext *ctx, const ResolvedConfig *config,
                 return -1;
             }
             if (stats)
-                stats->skipped_files++;
+                fconcat_size_increment_saturated(&stats->skipped_files);
             if (text_write_file_footer(ctx) != 0)
             {
                 ctx->current_file_info = NULL;
@@ -351,9 +361,9 @@ static int process_null_output_index(FconcatContext *ctx, const ResolvedConfig *
 
         if (stats)
         {
-            stats->processed_files++;
-            stats->total_files++;
-            stats->total_bytes += entry->info.size;
+            fconcat_size_increment_saturated(&stats->processed_files);
+            fconcat_size_increment_saturated(&stats->total_files);
+            fconcat_size_add_saturated(&stats->total_bytes, entry->info.size);
         }
 
         if (entry->info.size > MAX_FILE_SIZE ||
@@ -361,12 +371,12 @@ static int process_null_output_index(FconcatContext *ctx, const ResolvedConfig *
             (entry->info.is_symlink && config->symlink_handling == SYMLINK_PLACEHOLDER))
         {
             if (stats)
-                stats->skipped_files++;
+                fconcat_size_increment_saturated(&stats->skipped_files);
             continue;
         }
 
         if (stats)
-            stats->processed_bytes += entry->info.size;
+            fconcat_size_add_saturated(&stats->processed_bytes, entry->info.size);
     }
 
     return text_end_document(ctx);
@@ -569,7 +579,7 @@ void update_context_for_file(FconcatContext *ctx, const char *filepath, const Fi
     ProcessingStats *stats = (ProcessingStats *)ctx->stats;
     if (stats)
     {
-        stats->processed_files++;
+        fconcat_size_increment_saturated(&stats->processed_files);
     }
 }
 
@@ -578,12 +588,12 @@ void update_context_progress(FconcatContext *ctx, size_t bytes_processed)
     if (!ctx)
         return;
 
-    ctx->current_file_processed_bytes += bytes_processed;
+    fconcat_size_add_saturated(&ctx->current_file_processed_bytes, bytes_processed);
 
     ProcessingStats *stats = (ProcessingStats *)ctx->stats;
     if (stats)
     {
-        stats->processed_bytes += bytes_processed;
+        fconcat_size_add_saturated(&stats->processed_bytes, bytes_processed);
         stats->current_time = time(NULL);
     }
 }
@@ -959,7 +969,7 @@ int context_get_file_info(FconcatContext *ctx, const char *path, void *info)
     if (!file_info->path)
         return -1;
 
-    file_info->size = st.st_size;
+    file_info->size = stat_size_to_size_t(st.st_size);
     file_info->modified_time = st.st_mtime;
     file_info->is_directory = S_ISDIR(st.st_mode);
     file_info->is_symlink = S_ISLNK(st.st_mode);

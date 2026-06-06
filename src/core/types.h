@@ -30,6 +30,36 @@ extern "C"
 #define MAX_DIRECTORY_DEPTH 256                      // Max recursion depth
 #define MAX_TOTAL_FILES 1000000                      // Max files to process
 
+    static inline void fconcat_size_increment_saturated(size_t *value)
+    {
+        if (value && *value < SIZE_MAX)
+            (*value)++;
+    }
+
+    static inline void fconcat_size_add_saturated(size_t *value, size_t amount)
+    {
+        if (!value)
+            return;
+        if (*value > SIZE_MAX - amount)
+        {
+            *value = SIZE_MAX;
+            return;
+        }
+        *value += amount;
+    }
+
+    static inline void fconcat_size_subtract_saturated(size_t *value, size_t amount)
+    {
+        if (!value)
+            return;
+        if (*value < amount)
+        {
+            *value = 0;
+            return;
+        }
+        *value -= amount;
+    }
+
     // Processing statistics
     typedef struct
     {

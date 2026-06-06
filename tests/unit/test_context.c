@@ -6,6 +6,7 @@
 #include "test_framework.h"
 #include "../../src/core/context.h"
 #include "../../src/output/output.h"
+#include <stdint.h>
 #include <string.h>
 
 static int context_test_sink_write(OutputSink *sink, const char *data, size_t size)
@@ -52,6 +53,58 @@ TEST(create_fconcat_context_accepts_minimal_valid_inputs)
     return 0;
 }
 
+TEST(context_progress_counters_saturate)
+{
+    ResolvedConfig config;
+    memset(&config, 0, sizeof(config));
+    config.output_file = "out.txt";
+
+    OutputSink sink;
+    init_context_test_sink(&sink);
+
+    ProcessingStats stats;
+    memset(&stats, 0, sizeof(stats));
+    stats.processed_bytes = SIZE_MAX - 5;
+
+    FconcatContext *ctx = create_fconcat_context(&config, &sink, &stats, NULL, NULL, NULL);
+    ASSERT_NOT_NULL(ctx);
+
+    ctx->current_file_processed_bytes = SIZE_MAX - 3;
+    update_context_progress(ctx, 10);
+
+    ASSERT_TRUE(ctx->current_file_processed_bytes == SIZE_MAX);
+    ASSERT_TRUE(stats.processed_bytes == SIZE_MAX);
+
+    destroy_fconcat_context(ctx);
+    return 0;
+}
+
+TEST(context_file_counter_saturates)
+{
+    ResolvedConfig config;
+    memset(&config, 0, sizeof(config));
+    config.output_file = "out.txt";
+
+    OutputSink sink;
+    init_context_test_sink(&sink);
+
+    ProcessingStats stats;
+    memset(&stats, 0, sizeof(stats));
+    stats.processed_files = SIZE_MAX;
+
+    FconcatContext *ctx = create_fconcat_context(&config, &sink, &stats, NULL, NULL, NULL);
+    ASSERT_NOT_NULL(ctx);
+
+    FileInfo info;
+    memset(&info, 0, sizeof(info));
+    update_context_for_file(ctx, "file.txt", &info);
+
+    ASSERT_TRUE(stats.processed_files == SIZE_MAX);
+
+    destroy_fconcat_context(ctx);
+    return 0;
+}
+
 int test_context_main(void)
 {
     tests_run = 0;
@@ -61,6 +114,8 @@ int test_context_main(void)
     TEST_SUITE_BEGIN("FconcatContext Safety");
     RUN_TEST(create_fconcat_context_rejects_null_inputs);
     RUN_TEST(create_fconcat_context_accepts_minimal_valid_inputs);
+    RUN_TEST(context_progress_counters_saturate);
+    RUN_TEST(context_file_counter_saturates);
 
     TEST_SUMMARY();
     return TEST_EXIT_CODE();
