@@ -601,6 +601,7 @@ TEST(stream_buffer_rejects_corrupt_state)
     ASSERT_NOT_NULL(buf);
 
     char *saved_data = buf->data;
+    char *saved_owned_data = buf->owned_data;
     size_t saved_capacity = buf->capacity;
 
     buf->capacity = 0;
@@ -609,6 +610,16 @@ TEST(stream_buffer_rejects_corrupt_state)
 
     buf->capacity = saved_capacity;
     buf->data = NULL;
+    ASSERT_EQ(-1, stream_buffer_write(buf, "x", 1));
+    ASSERT_EQ(-1, stream_buffer_flush(buf));
+
+    buf->data = saved_data;
+    buf->owned_data = NULL;
+    ASSERT_EQ(-1, stream_buffer_write(buf, "x", 1));
+    ASSERT_EQ(-1, stream_buffer_flush(buf));
+
+    buf->owned_data = saved_owned_data;
+    buf->data = saved_data + 1;
     ASSERT_EQ(-1, stream_buffer_write(buf, "x", 1));
     ASSERT_EQ(-1, stream_buffer_flush(buf));
 
@@ -626,6 +637,25 @@ TEST(stream_buffer_rejects_corrupt_state)
     stream_buffer_destroy(buf);
     memory_manager_destroy(mgr);
     return 0;
+}
+
+TEST(stream_buffer_destroy_cleans_owned_data_with_corrupt_data)
+{
+#ifndef FCONCAT_LEAK_GUARD
+    return 0;
+#else
+    MemoryManager *mgr = memory_manager_create();
+    ASSERT_NOT_NULL(mgr);
+
+    StreamBuffer *buf = stream_buffer_create(mgr, 16);
+    ASSERT_NOT_NULL(buf);
+    ASSERT_NOT_NULL(buf->owned_data);
+
+    buf->data = NULL;
+    stream_buffer_destroy(buf);
+    memory_manager_destroy(mgr);
+    return 0;
+#endif
 }
 
 TEST(stream_buffer_destroy_null_is_safe)
@@ -716,6 +746,7 @@ int test_memory_main(void)
     RUN_TEST(stream_buffer_rejects_oversized_initial_capacity);
     RUN_TEST(stream_buffer_rejects_null_inputs);
     RUN_TEST(stream_buffer_rejects_corrupt_state);
+    RUN_TEST(stream_buffer_destroy_cleans_owned_data_with_corrupt_data);
     RUN_TEST(stream_buffer_destroy_null_is_safe);
     
     TEST_SUITE_BEGIN("Memory Tracking Toggle");

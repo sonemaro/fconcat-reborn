@@ -70,6 +70,7 @@ extern "C"
     typedef struct
     {
         char *data;
+        char *owned_data;
         size_t size;
         size_t capacity;
         size_t position;

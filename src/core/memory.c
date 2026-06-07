@@ -581,12 +581,13 @@ StreamBuffer *stream_buffer_create(MemoryManager *manager, size_t initial_size)
     if (!buffer)
         return NULL;
 
-    buffer->data = memory_alloc(manager, initial_size);
-    if (!buffer->data)
+    buffer->owned_data = memory_alloc(manager, initial_size);
+    if (!buffer->owned_data)
     {
         memory_free(manager, buffer);
         return NULL;
     }
+    buffer->data = buffer->owned_data;
 
     buffer->size = 0;
     buffer->capacity = initial_size;
@@ -600,6 +601,8 @@ static int stream_buffer_state_is_valid(const StreamBuffer *buffer)
 {
     return buffer &&
            buffer->data &&
+           buffer->owned_data &&
+           buffer->data == buffer->owned_data &&
            buffer->capacity > 0 &&
            buffer->capacity <= MAX_STREAM_BUFFER_SIZE &&
            buffer->size <= buffer->capacity;
@@ -638,10 +641,11 @@ int stream_buffer_write(StreamBuffer *buffer, const char *data, size_t size)
         if (new_capacity > MAX_STREAM_BUFFER_SIZE)
             return -1;
 
-        char *new_data = memory_realloc(buffer->memory_manager, buffer->data, new_capacity);
+        char *new_data = memory_realloc(buffer->memory_manager, buffer->owned_data, new_capacity);
         if (!new_data)
             return -1;
 
+        buffer->owned_data = new_data;
         buffer->data = new_data;
         buffer->capacity = new_capacity;
     }
@@ -673,6 +677,10 @@ void stream_buffer_destroy(StreamBuffer *buffer)
     if (!buffer)
         return;
 
-    memory_free(buffer->memory_manager, buffer->data);
-    memory_free(buffer->memory_manager, buffer);
+    MemoryManager *manager = buffer->memory_manager;
+    char *owned_data = buffer->owned_data ? buffer->owned_data : buffer->data;
+    buffer->data = NULL;
+    buffer->owned_data = NULL;
+    memory_free(manager, owned_data);
+    memory_free(manager, buffer);
 }
